@@ -1,0 +1,16 @@
+[package]
+name = "jqrs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+either = "1.15.0"
+
+[dependencies.logos]
+version = "0.15.0"
+features = ["forbid_unsafe"]
+
+[dependencies.rug]
+version = "1.27"
+default-features = false
+features = ["integer", "float", "std"]
