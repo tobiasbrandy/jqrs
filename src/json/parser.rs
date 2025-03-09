@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap, ops::{Deref, DerefMut}
+    collections::HashMap,
+    ops::{Deref, DerefMut},
 };
 
 use crate::{lexer::LexSource, math::Number, parser::Parser};

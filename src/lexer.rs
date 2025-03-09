@@ -226,7 +226,7 @@ pub enum LexSourceRef<'a> {
 }
 impl Deref for LexSourceRef<'_> {
     type Target = str;
-    
+
     fn deref(&self) -> &Self::Target {
         match self {
             LexSourceRef::File(file) => file.deref(),
@@ -242,28 +242,28 @@ pub enum LexSource {
 
 impl Source for LexSource {
     type Slice<'a> = LexSourceRef<'a>;
-    
+
     fn len(&self) -> usize {
         match self {
             LexSource::File(source) => source.len(),
             LexSource::String(source) => source.len(),
         }
     }
-    
+
     fn read<'a, Chunk: source::Chunk<'a>>(&'a self, offset: usize) -> Option<Chunk> {
         match self {
             LexSource::File(source) => source.read(offset),
             LexSource::String(source) => source.read(offset),
         }
     }
-    
+
     fn read_byte(&self, offset: usize) -> u8 {
         match self {
             LexSource::File(source) => source.read_byte(offset),
             LexSource::String(source) => source.read_byte(offset),
         }
     }
-    
+
     fn slice(&self, range: Range<usize>) -> Option<Self::Slice<'_>> {
         Some(match self {
             LexSource::File(source) => LexSourceRef::File(source.slice(range)?),
