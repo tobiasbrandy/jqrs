@@ -14,3 +14,7 @@ features = ["forbid_unsafe"]
 version = "1.27"
 default-features = false
 features = ["integer", "float", "std"]
+
+# Logos requires this to enable tail call optimizations, and avoid stack overflows
+[profile.dev]
+opt-level = 1
