@@ -66,6 +66,7 @@ struct LazyFileSourceState {
     file: File,
     buffer: Vec<u8>,
     start_offset: usize,
+    consumed: usize,
     len: usize,
     eof: bool,
     error: bool,
@@ -97,6 +98,7 @@ impl LazyFileSource {
             file,
             buffer: Vec::with_capacity(capacity),
             start_offset: 0,
+            consumed: 0,
             len,
             eof: false,
             error: false,
@@ -108,12 +110,6 @@ impl LazyFileSource {
             state: &mut LazyFileSourceState,
             Range { start, end }: Range<usize>,
         ) -> io::Result<()> {
-            // TODO
-            // Hypothesis: we are never asked data backwards
-            // Another option is to only drain the buffer manually by the user
-            // This way, the user can do it when part of the input was fully parsed
-            // Eg: Between parsing each json
-            // TODO: Test if we can drain ONLY after being asked for slice
             assert!(start >= state.start_offset);
             assert!(end <= state.len);
 
@@ -127,18 +123,22 @@ impl LazyFileSource {
                 return Ok(());
             }
 
-            let mut capacity = state.buffer.capacity();
-            if end - start > capacity {
-                capacity = 2 * (end - start);
+            state.buffer.drain(..state.consumed - state.start_offset);
+            state.start_offset = state.consumed;
+
+            let buf_len = state.buffer.len();
+            let mut additional_capacity = state.buffer.capacity() - buf_len;
+            if end - start > additional_capacity {
+                additional_capacity = 2 * (end - start);
             }
 
-            state.buffer.reserve(capacity);
-            capacity = state.buffer.capacity();
+            state.buffer.reserve(additional_capacity);
+            additional_capacity = state.buffer.capacity() - buf_len;
 
             let n = state
                 .file
                 .by_ref()
-                .take((capacity - state.buffer.len()) as u64)
+                .take((additional_capacity) as u64)
                 .read_to_end(&mut state.buffer)?;
 
             state.eof = n == 0;
@@ -160,7 +160,7 @@ impl LazyFileSource {
         let real_range = {
             let state = &mut *self.0.borrow_mut();
 
-            if state.error || range.end > state.len {
+            if state.error || range.end > state.len || (state.eof && range.end - state.start_offset > state.buffer.len()) {
                 return None;
             }
 
@@ -192,9 +192,10 @@ impl Source for LazyFileSource {
         // If we didn't mutate the buffer from this point on, this would be safe.
         // However, we are mutating the buffer, so we need to be careful.
         //
-        // Logos wants the slice to live as long as the source, so the lexer can avoid copying
-        // the slice when creating tokens.
-        // Using LazyFileSource forces us to only use owned tokens.
+        // Logos wants the slice to live as long as the source, so the user can avoid copying
+        // the slice when creating tokens during callbacks.
+        // Using LazyFileSource forces us to avoid keeping any slice reference after the callback ends.
+        // In consequence, this forces all token content to be owned.
         // This is the case for jqrs, so this shouldn't be a problem for us.
         let slice = unsafe { std::mem::transmute::<&[u8], &[u8]>(&*slice_ref) };
 
@@ -202,16 +203,16 @@ impl Source for LazyFileSource {
     }
 
     fn read_byte(&self, offset: usize) -> u8 {
-        let state = &mut *self.0.borrow_mut();
-        LazyFileSource::ensure(state, offset..offset + 1);
         self.slice_bytes(offset..offset + 1).unwrap()[0]
     }
 
     fn slice(&self, range: Range<usize>) -> Option<Self::Slice<'_>> {
-        Some(LazyFileSourceRef(Ref::map(
-            self.slice_bytes(range)?.0,
-            |slice| std::str::from_utf8(slice).expect("lexer must match only valid utf-8 slices"),
-        )))
+        // Hypothesis: After a slice operation, data is never accessed again by Logos
+        self.0.borrow_mut().consumed = range.start;
+
+        Some(LazyFileSourceRef(Ref::map(self.slice_bytes(range)?.0, |slice| {
+            std::str::from_utf8(slice).expect("lexer must match only valid utf-8 slices")
+        })))
     }
 
     fn is_boundary(&self, index: usize) -> bool {
