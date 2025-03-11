@@ -2,27 +2,29 @@ use std::process::ExitCode;
 
 use jqrs::{
     json::parser::{JsonParser, JsonParserError},
-    lexer::{LazyFileSource, LexSource},
+    lexer::LexSource,
     parser::ParserPos,
 };
 
 pub enum SourceType {
     File,
+    Stdin,
     String,
 }
 
 fn main() -> ExitCode {
-    let source_type = SourceType::String;
-    let input_path = "tests/big_json.json";
+    let source_type = SourceType::Stdin;
+    let input_path = "tests/big.jsonl";
 
     let source = match source_type {
-        SourceType::File => match LazyFileSource::from_path(input_path) {
-            Ok(source) => LexSource::File(source),
+        SourceType::File => match LexSource::from_path(input_path) {
+            Ok(source) => source,
             Err(err) => {
                 println!("error reading file {input_path}: {err}");
                 return ExitCode::FAILURE;
             }
         },
+        SourceType::Stdin => LexSource::stdin(),
         SourceType::String => match std::fs::read_to_string(input_path) {
             Ok(source) => LexSource::String(source),
             Err(err) => {
