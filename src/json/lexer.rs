@@ -19,13 +19,10 @@ impl LexState for JsonLexState {
     }
 }
 
-fn parse_string(s: &str) -> String {
-    s[1..s.len() - 1].to_string()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum JsonLexError {
     NumberParseError(ParseFloatError),
+    InvalidJsonEscapeSeq(String),
     #[default]
     InvalidToken,
 }
@@ -33,6 +30,7 @@ impl std::fmt::Display for JsonLexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JsonLexError::NumberParseError(err) => write!(f, "{err}"),
+            JsonLexError::InvalidJsonEscapeSeq(s) => write!(f, "invalid json escaped sequence {s}"),
             JsonLexError::InvalidToken => write!(f, "invalid token"),
         }
     }
@@ -57,8 +55,7 @@ impl From<ParseFloatError> for JsonLexError {
 #[logos(source = LexSource)]
 #[logos(skip r"[\ \t\f\v\r\uFEFF]+")]
 pub enum JsonToken {
-    // Literals
-    #[regex(r#""([^\"\\\x00-\x1F\x7F]|\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4}))*""#, |lex| parse_string(&lex.slice()))]
+    // Parsed using JsonStringToken
     Str(String),
 
     #[regex(r#"[\+\-]?([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, |lex| parse_number(&lex.slice()))]
@@ -102,16 +99,58 @@ pub enum JsonToken {
 
     #[token(":")]
     KVDelim,
+
     // String
-    // StrBuilder Builder
-    // LQuote       // "
-    // RQuote       // "
+    #[token("\"")]
+    Quote,
+
+    // Control
     #[token("\n", register_newline)]
     _Newline,
 
     #[default]
     EOF,
 }
+
+#[derive(Logos, Debug, Clone, PartialEq, Default)]
+#[logos(extras = JsonLexState)]
+#[logos(error = JsonLexError)]
+#[logos(source = LexSource)]
+pub enum JsonStringToken {
+    #[token("\"")]
+    Quote,
+
+    #[regex(r#"[^\"\\\x00-\x1F\x7F]+"#, |lex| lex.slice().to_string())]
+    String(String),
+
+    #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()))]
+    Escaped(char),
+
+    #[token("\n", register_newline)]
+    _Newline,
+
+    #[default]
+    EOF,
+}
+
+fn parse_escaped(s: &str) -> Result<char, JsonLexError> {
+    match s {
+        "\\\"" => Ok('\"'),
+        "\\\\" => Ok('\\'),
+        "\\/" => Ok('/'),
+        "\\b" => Ok('\x08'),
+        "\\f" => Ok('\x0C'),
+        "\\n" => Ok('\n'),
+        "\\r" => Ok('\r'),
+        "\\t" => Ok('\t'),
+        s if s.len() == 6 && s.starts_with("\\u") => {
+            let i = u32::from_str_radix(&s[2..6], 16).map_err(|_| JsonLexError::InvalidJsonEscapeSeq(s.to_string()))?;
+            char::from_u32(i).ok_or_else(|| JsonLexError::InvalidJsonEscapeSeq(s.to_string()))
+        },
+        s => Err(JsonLexError::InvalidJsonEscapeSeq(s.to_string())),
+    }
+}
+
 impl std::fmt::Display for JsonToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -129,8 +168,21 @@ impl std::fmt::Display for JsonToken {
             JsonToken::LBrace => write!(f, "{{"),
             JsonToken::RBrace => write!(f, "}}"),
             JsonToken::KVDelim => write!(f, ":"),
+            JsonToken::Quote => write!(f, "\""),
             JsonToken::_Newline => write!(f, r#"\n"#),
             JsonToken::EOF => write!(f, "<EOF>"),
+        }?;
+        Ok(())
+    }
+}
+impl std::fmt::Display for JsonStringToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JsonStringToken::Quote => write!(f, "\""),
+            JsonStringToken::String(s) => write!(f, "{s}"),
+            JsonStringToken::Escaped(c) => write!(f, "\\{c}"),
+            JsonStringToken::_Newline => write!(f, r#"\n"#),
+            JsonStringToken::EOF => write!(f, "<EOF>"),
         }?;
         Ok(())
     }

@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use std::collections::HashMap;
+
 use crate::{
     lexer::LexSource,
     math::Number,
@@ -7,7 +9,7 @@ use crate::{
 };
 
 use super::{
-    lexer::{JsonLexError, JsonToken},
+    lexer::{JsonLexError, JsonStringToken, JsonToken},
     Json,
 };
 
@@ -46,6 +48,7 @@ impl Iterator for JsonParser<'_> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonParserError {
     LexError(JsonLexError),
+    StringParserError(JsonStringParserError),
     ExpectingString(JsonToken),
     ExpectingNumber(JsonToken),
     UnmatchedExpectation(JsonToken, JsonToken), // expected, actual
@@ -55,12 +58,13 @@ impl std::fmt::Display for JsonParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JsonParserError::LexError(err) => write!(f, "{err}"),
-            JsonParserError::ExpectingString(tok) => write!(f, "Expected string got {tok}"),
-            JsonParserError::ExpectingNumber(tok) => write!(f, "Expected number got {tok}"),
+            JsonParserError::ExpectingString(tok) => write!(f, "expected string got {tok}"),
+            JsonParserError::StringParserError(err) => write!(f, "error parsing string: {err}"),
+            JsonParserError::ExpectingNumber(tok) => write!(f, "expected number got {tok}"),
             JsonParserError::UnmatchedExpectation(expected, actual) => {
                 write!(f, "expected {expected} got {actual}")
             }
-            JsonParserError::UnexpectedToken(tok) => write!(f, "Unexpected token {tok}"),
+            JsonParserError::UnexpectedToken(tok) => write!(f, "unexpected token {tok}"),
         }
     }
 }
@@ -68,6 +72,7 @@ impl std::error::Error for JsonParserError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             JsonParserError::LexError(err) => Some(err),
+            JsonParserError::StringParserError(err) => Some(err),
             _ => None,
         }
     }
@@ -86,35 +91,62 @@ impl From<ExpectationFailed<'_, JsonToken>> for JsonParserError {
         JsonParserError::UnmatchedExpectation(expected, actual)
     }
 }
+impl From<JsonStringParserError> for JsonParserError {
+    fn from(err: JsonStringParserError) -> Self {
+        JsonParserError::StringParserError(err)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsonStringParserError {
+    LexError(JsonLexError),
+    UnmatchedExpectation(JsonStringToken, JsonStringToken), // expected, actual
+    UnexpectedToken(JsonStringToken),
+}
+impl std::fmt::Display for JsonStringParserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JsonStringParserError::LexError(err) => write!(f, "{err}"),
+            JsonStringParserError::UnmatchedExpectation(expected, actual) => {
+                write!(f, "expected {expected} got {actual}")
+            }
+            JsonStringParserError::UnexpectedToken(tok) => write!(f, "Unexpected token {tok}"),
+        }
+    }
+}
+impl std::error::Error for JsonStringParserError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            JsonStringParserError::LexError(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+impl From<JsonLexError> for JsonStringParserError {
+    fn from(err: JsonLexError) -> Self {
+        JsonStringParserError::LexError(err)
+    }
+}
+impl From<ExpectationFailed<'_, JsonStringToken>> for JsonStringParserError {
+    fn from(
+        ExpectationFailed {
+            expected, actual, ..
+        }: ExpectationFailed<'_, JsonStringToken>,
+    ) -> Self {
+        JsonStringParserError::UnmatchedExpectation(expected, actual)
+    }
+}
 
 // Convinience type aliases
 type JParser<'a> = Parser<'a, JsonToken, JsonParserError>;
 type JResult<T> = Result<T, JsonParserError>;
 
-fn expect_str(parser: &mut JParser) -> JResult<String> {
-    let tok = parser.pop_token()?;
-    if let JsonToken::Str(s) = tok {
-        Ok(s)
-    } else {
-        Err(JsonParserError::ExpectingString(tok))
-    }
-}
-
-fn expect_num(parser: &mut JParser) -> JResult<Number> {
-    let tok = parser.pop_token()?;
-    if let JsonToken::Num(n) = tok {
-        Ok(n)
-    } else {
-        Err(JsonParserError::ExpectingNumber(tok))
-    }
-}
-
 fn Json(parser: &mut JParser) -> JResult<Json> {
     match parser.peek_token()? {
-        JsonToken::LBrack => Array(parser),
-        JsonToken::LBrace => Object(parser),
-        JsonToken::Str(_) => Ok(Json::String(expect_str(parser)?)),
-        JsonToken::Num(_) => Ok(Json::Number(expect_num(parser)?)),
+        JsonToken::LBrack => Array(parser).map(Json::Array),
+        JsonToken::LBrace => Object(parser).map(Json::Object),
+        JsonToken::Quote => String(parser).map(Json::String),
+        JsonToken::Num(_) => Number(parser).map(Json::Number),
         JsonToken::True => parser.pop_and_produce(Json::Bool(true)),
         JsonToken::False => parser.pop_and_produce(Json::Bool(false)),
         JsonToken::Null => parser.pop_and_produce(Json::Null),
@@ -125,35 +157,62 @@ fn Json(parser: &mut JParser) -> JResult<Json> {
     }
 }
 
-fn Array(parser: &mut JParser) -> JResult<Json> {
-    Ok(Json::Array(
-        parser
-            .parse_sequence(Json, JsonToken::LBrack, JsonToken::Comma, JsonToken::RBrack)
-            .collect::<Result<_, _>>()?,
-    ))
+fn Array(parser: &mut JParser) -> JResult<Vec<Json>> {
+    parser
+        .parse_sequence(Json, JsonToken::LBrack, JsonToken::Comma, JsonToken::RBrack)
+        .collect::<Result<_, _>>()
 }
 
-fn Object(parser: &mut JParser) -> JResult<Json> {
-    Ok(Json::Object(
-        parser
-            .parse_sequence(
-                ObjectElement,
-                JsonToken::LBrace,
-                JsonToken::Comma,
-                JsonToken::RBrace,
-            )
-            .collect::<Result<_, _>>()?,
-    ))
+fn Object(parser: &mut JParser) -> JResult<HashMap<String, Json>> {
+    parser
+        .parse_sequence(
+            ObjectElement,
+            JsonToken::LBrace,
+            JsonToken::Comma,
+            JsonToken::RBrace,
+        )
+        .collect::<Result<_, _>>()
 }
 
 fn ObjectElement(parser: &mut JParser) -> JResult<(String, Json)> {
-    let key = expect_str(parser)?;
+    let key = String(parser)?;
 
     parser.expect_token(JsonToken::KVDelim)?;
 
     let val = Json(parser)?;
 
     Ok((key, val))
+}
+
+fn String(parser: &mut JParser) -> JResult<String> {
+    parser.expect_token(JsonToken::Quote)?;
+
+    // Morph json parser into string parser
+    let mut str_parser = parser.morph::<JsonStringToken, JsonStringParserError>();
+
+    let mut str = String::new();
+    loop {
+        match str_parser.pop_token()? {
+            JsonStringToken::Quote => break,
+            JsonStringToken::String(s) => str.push_str(&s),
+            JsonStringToken::Escaped(c) => str.push(c),
+            tok => return Err(JsonStringParserError::UnexpectedToken(tok).into()),
+        }
+    }
+
+    // Restore json parser
+    str_parser.morph_into(parser);
+
+    Ok(str)
+}
+
+fn Number(parser: &mut JParser) -> JResult<Number> {
+    let tok = parser.pop_token()?;
+    if let JsonToken::Num(n) = tok {
+        Ok(n)
+    } else {
+        Err(JsonParserError::ExpectingNumber(tok))
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +224,7 @@ mod tests {
     const JSONS: &str = r#"
     []
     ""
+    "hola"
     [
         "",
         true,

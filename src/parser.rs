@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use logos::Lexer;
+use logos::{Lexer, Logos};
 
 use crate::lexer::{LexState, LexToken, LinePos};
 
@@ -113,6 +113,44 @@ where
             .map_err(|err| Error::from(err.clone()))
     }
 
+    pub fn morph<Token2, Error2>(&mut self) -> Parser<'source, Token2, Error2>
+    where
+        Token2: LexToken<'source>,
+        Token2::Extras: LexState,
+        Token2: Logos<'source, Source = Token::Source>,
+        Token::Extras: Into<Token2::Extras>,
+        Error2: From<Token2::Error> + From<ExpectationFailed<'source, Token2>>,
+    {
+        debug_assert!(self.lookahead_tokens.is_empty());
+
+        let closed = self.closed;
+        self.close();
+
+        Parser {
+            lexer: self.lexer.clone().morph::<Token2>(),
+            lookahead_tokens: VecDeque::new(),
+            pos: self.pos,
+            closed,
+            _boo: std::marker::PhantomData,
+        }
+    }
+
+    pub fn morph_into<Token2, Error2>(self, target: &mut Parser<'source, Token2, Error2>)
+    where
+        Token2: LexToken<'source>,
+        Token2::Extras: LexState,
+        Token2: Logos<'source, Source = Token::Source>,
+        Token::Extras: Into<Token2::Extras>,
+        Error2: From<Token2::Error> + From<ExpectationFailed<'source, Token2>>,
+    {
+        debug_assert!(self.lookahead_tokens.is_empty());
+
+        target.lexer = self.lexer.morph::<Token2>();
+        target.lookahead_tokens.clear();
+        target.pos = self.pos;
+        target.closed = self.closed;
+    }
+
     pub fn pop_and_produce<Ok>(&mut self, val: Ok) -> Result<Ok, Error> {
         self.pop_token()?;
         Ok(val)
@@ -134,15 +172,15 @@ where
     pub fn parse_sequence<'iter, Element>(
         &'iter mut self,
         element_parser: fn(&mut Parser<'source, Token, Error>) -> Result<Element, Error>,
-        start_token: Token,
-        separator_token: Token,
-        end_token: Token,
+        start: Token,
+        separator: Token,
+        end: Token,
     ) -> ParseSequenceIter<'iter, 'source, Token, Element, Error> {
         ParseSequenceIter {
             parser: self,
-            start_token,
-            separator_token,
-            end_token,
+            start,
+            separator,
+            end,
             element_parser,
             started: false,
             ended: false,
@@ -167,9 +205,9 @@ where
     Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
 {
     parser: &'iter mut Parser<'source, Token, Error>,
-    start_token: Token,
-    separator_token: Token,
-    end_token: Token,
+    start: Token,
+    separator: Token,
+    end: Token,
     element_parser: fn(&mut Parser<'source, Token, Error>) -> Result<Element, Error>,
     started: bool,
     ended: bool,
@@ -192,7 +230,7 @@ where
 
         if !self.started {
             self.started = true;
-            if let Err(err) = self.parser.expect_token(self.start_token.clone()) {
+            if let Err(err) = self.parser.expect_token(self.start.clone()) {
                 self.ended = true;
                 return Some(Err(err));
             }
@@ -206,16 +244,16 @@ where
             }
         };
 
-        if *tok == self.end_token {
+        if *tok == self.end {
             self.ended = true;
-            if let Err(err) = self.parser.expect_token(self.end_token.clone()) {
+            if let Err(err) = self.parser.expect_token(self.end.clone()) {
                 return Some(Err(err));
             }
             return None;
         }
 
         if !first {
-            if let Err(err) = self.parser.expect_token(self.separator_token.clone()) {
+            if let Err(err) = self.parser.expect_token(self.separator.clone()) {
                 self.ended = true;
                 return Some(Err(err));
             }

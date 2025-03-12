@@ -21,7 +21,7 @@ impl Default for LinePos {
     }
 }
 
-pub trait LexState: Default {
+pub trait LexState: Clone + Default {
     fn line_pos(&self) -> LinePos;
     fn line_pos_mut(&mut self) -> &mut LinePos;
 }
