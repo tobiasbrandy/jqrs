@@ -2,22 +2,9 @@ use logos::Logos;
 use rug::float::ParseFloatError;
 
 use crate::{
-    lexer::{register_newline, LexSource, LexState, LinePos},
+    lexer::{register_newline, register_tab, LexSource, LinePos},
     math::{parse_number, Number},
 };
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct JsonLexState {
-    pub line_pos: LinePos,
-}
-impl LexState for JsonLexState {
-    fn line_pos(&self) -> LinePos {
-        self.line_pos
-    }
-    fn line_pos_mut(&mut self) -> &mut LinePos {
-        &mut self.line_pos
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum JsonLexError {
@@ -50,10 +37,10 @@ impl From<ParseFloatError> for JsonLexError {
 }
 
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
-#[logos(extras = JsonLexState)]
+#[logos(extras = LinePos)]
 #[logos(error = JsonLexError)]
 #[logos(source = LexSource)]
-#[logos(skip r"[\ \t\f\v\r\uFEFF]+")]
+#[logos(skip r"[\ \f\v\r\uFEFF]+")]
 pub enum JsonToken {
     // Parsed using JsonStringToken
     Str(String),
@@ -108,12 +95,15 @@ pub enum JsonToken {
     #[token("\n", register_newline)]
     _Newline,
 
+    #[token("\t", register_tab)]
+    _Tab,
+
     #[default]
     EOF,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
-#[logos(extras = JsonLexState)]
+#[logos(extras = LinePos)]
 #[logos(error = JsonLexError)]
 #[logos(source = LexSource)]
 pub enum JsonStringToken {
@@ -125,9 +115,6 @@ pub enum JsonStringToken {
 
     #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()))]
     Escaped(char),
-
-    #[token("\n", register_newline)]
-    _Newline,
 
     #[default]
     EOF,
@@ -170,6 +157,7 @@ impl std::fmt::Display for JsonToken {
             JsonToken::KVDelim => write!(f, ":"),
             JsonToken::Quote => write!(f, "\""),
             JsonToken::_Newline => write!(f, r#"\n"#),
+            JsonToken::_Tab => write!(f, r#"\t"#),
             JsonToken::EOF => write!(f, "<EOF>"),
         }?;
         Ok(())
@@ -181,7 +169,6 @@ impl std::fmt::Display for JsonStringToken {
             JsonStringToken::Quote => write!(f, "\""),
             JsonStringToken::String(s) => write!(f, "{s}"),
             JsonStringToken::Escaped(c) => write!(f, "\\{c}"),
-            JsonStringToken::_Newline => write!(f, r#"\n"#),
             JsonStringToken::EOF => write!(f, "<EOF>"),
         }?;
         Ok(())
@@ -216,7 +203,7 @@ mod tests {
     "#;
 
     #[test]
-    fn test_lexer() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_lexer() {
         let source = LexSource::String(JSONS.to_string());
         let mut lexer = JsonToken::lexer(&source);
 
@@ -226,7 +213,5 @@ mod tests {
 
         let state = lexer.extras;
         println!("{state:#?}");
-
-        Ok(())
     }
 }

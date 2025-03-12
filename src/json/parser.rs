@@ -49,7 +49,6 @@ impl Iterator for JsonParser<'_> {
 pub enum JsonParserError {
     LexError(JsonLexError),
     StringParserError(JsonStringParserError),
-    ExpectingString(JsonToken),
     ExpectingNumber(JsonToken),
     UnmatchedExpectation(JsonToken, JsonToken), // expected, actual
     UnexpectedToken(JsonToken),
@@ -58,7 +57,6 @@ impl std::fmt::Display for JsonParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JsonParserError::LexError(err) => write!(f, "{err}"),
-            JsonParserError::ExpectingString(tok) => write!(f, "expected string got {tok}"),
             JsonParserError::StringParserError(err) => write!(f, "error parsing string: {err}"),
             JsonParserError::ExpectingNumber(tok) => write!(f, "expected number got {tok}"),
             JsonParserError::UnmatchedExpectation(expected, actual) => {

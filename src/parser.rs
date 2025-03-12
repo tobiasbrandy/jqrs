@@ -35,6 +35,8 @@ where
     Token::Extras: LexState,
     Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
 {
+    const TAB_SIZE: usize = 8;
+
     pub fn new(source: &'source Token::Source) -> Self {
         Self {
             lexer: Token::lexer(source),
@@ -61,9 +63,11 @@ where
         &self.pos
     }
 
-    fn update_pos(&mut self, LinePos { line, line_start }: LinePos) {
-        self.pos.line = line;
-        self.pos.column = self.lexer.span().end - line_start + 1;
+    fn update_pos(&mut self) {
+        let LinePos { line, line_start, tab_count } = self.lexer.extras.line_pos();
+
+        self.pos.line = *line;
+        self.pos.column = self.lexer.span().end - line_start + 1 + tab_count * (Self::TAB_SIZE - 1);
     }
 
     pub fn pop_token(&mut self) -> Result<Token, Error> {
@@ -79,7 +83,7 @@ where
             .unwrap_or_else(|| Ok(Token::default()));
 
         if self.lookahead_tokens.is_empty() {
-            self.update_pos(self.lexer.extras.line_pos());
+            self.update_pos();
         }
 
         if next.is_err() {

@@ -6,10 +6,11 @@ use std::io::{self, Read, Stdin};
 use std::{cell::Ref, fs::File, ops::Deref, path::Path};
 use std::{cell::RefCell, ops::Range};
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct LinePos {
     pub line: usize,
     pub line_start: usize,
+    pub tab_count: usize,
 }
 
 impl Default for LinePos {
@@ -17,13 +18,23 @@ impl Default for LinePos {
         Self {
             line: 1,
             line_start: 0,
+            tab_count: 0,
         }
     }
 }
 
 pub trait LexState: Clone + Default {
-    fn line_pos(&self) -> LinePos;
+    fn line_pos(&self) -> &LinePos;
     fn line_pos_mut(&mut self) -> &mut LinePos;
+}
+
+impl LexState for LinePos {
+    fn line_pos(&self) -> &LinePos {
+        self
+    }
+    fn line_pos_mut(&mut self) -> &mut LinePos {
+        self
+    }
 }
 
 pub trait LexToken<'a>: Logos<'a> + Clone + Default + PartialEq
@@ -43,6 +54,17 @@ where
     let line_pos = lex.extras.line_pos_mut();
     line_pos.line += 1;
     line_pos.line_start = span.end;
+    line_pos.tab_count = 0;
+    Skip
+}
+
+pub fn register_tab<'a, Token>(lex: &mut Lexer<'a, Token>) -> Skip
+where
+    Token: LexToken<'a>,
+    Token::Extras: LexState,
+{
+    let line_pos = lex.extras.line_pos_mut();
+    line_pos.tab_count += 1;
     Skip
 }
 
