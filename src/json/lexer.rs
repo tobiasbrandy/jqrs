@@ -2,14 +2,14 @@ use logos::Logos;
 use rug::float::ParseFloatError;
 
 use crate::{
-    lexer::{register_newline, register_tab, LexSource, LinePos},
+    lexer::{parse_escaped, register_newline, register_tab, LexSource, LinePos},
     math::{parse_number, Number},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum JsonLexError {
     NumberParseError(ParseFloatError),
-    InvalidJsonEscapeSeq(String),
+    InvalidEscapeSeq(String),
     #[default]
     InvalidToken,
 }
@@ -17,7 +17,7 @@ impl std::fmt::Display for JsonLexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             JsonLexError::NumberParseError(err) => write!(f, "{err}"),
-            JsonLexError::InvalidJsonEscapeSeq(s) => write!(f, "invalid json escaped sequence {s}"),
+            JsonLexError::InvalidEscapeSeq(s) => write!(f, "invalid escape sequence {s}"),
             JsonLexError::InvalidToken => write!(f, "invalid token"),
         }
     }
@@ -113,29 +113,11 @@ pub enum JsonStringToken {
     #[regex(r#"[^\"\\\x00-\x1F\x7F]+"#, |lex| lex.slice().to_string())]
     String(String),
 
-    #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()))]
+    #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()).map_err(JsonLexError::InvalidEscapeSeq))]
     Escaped(char),
 
     #[default]
     EOF,
-}
-
-fn parse_escaped(s: &str) -> Result<char, JsonLexError> {
-    match s {
-        "\\\"" => Ok('\"'),
-        "\\\\" => Ok('\\'),
-        "\\/" => Ok('/'),
-        "\\b" => Ok('\x08'),
-        "\\f" => Ok('\x0C'),
-        "\\n" => Ok('\n'),
-        "\\r" => Ok('\r'),
-        "\\t" => Ok('\t'),
-        s if s.len() == 6 && s.starts_with("\\u") => {
-            let i = u32::from_str_radix(&s[2..6], 16).map_err(|_| JsonLexError::InvalidJsonEscapeSeq(s.to_string()))?;
-            char::from_u32(i).ok_or_else(|| JsonLexError::InvalidJsonEscapeSeq(s.to_string()))
-        },
-        s => Err(JsonLexError::InvalidJsonEscapeSeq(s.to_string())),
-    }
 }
 
 impl std::fmt::Display for JsonToken {

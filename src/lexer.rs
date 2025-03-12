@@ -68,6 +68,24 @@ where
     Skip
 }
 
+pub fn parse_escaped(s: &str) -> Result<char, String> {
+    match s {
+        "\\\"" => Some('\"'),
+        "\\\\" => Some('\\'),
+        "\\/" => Some('/'),
+        "\\b" => Some('\x08'),
+        "\\f" => Some('\x0C'),
+        "\\n" => Some('\n'),
+        "\\r" => Some('\r'),
+        "\\t" => Some('\t'),
+        s if s.len() == 6 && s.starts_with("\\u") => u32::from_str_radix(&s[2..6], 16)
+            .ok()
+            .and_then(char::from_u32),
+        _ => None,
+    }
+    .ok_or_else(|| s.to_string())
+}
+
 /// Possible references types to a source
 #[derive(Debug, PartialEq, Eq)]
 pub enum LexSourceRef<'a> {
