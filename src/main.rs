@@ -13,7 +13,7 @@ pub enum SourceType {
 }
 
 fn main() -> ExitCode {
-    let source_type = SourceType::Stdin;
+    let source_type = SourceType::File;
     let input_path = "tests/big.jsonl";
 
     let source = match source_type {

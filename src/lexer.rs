@@ -26,13 +26,13 @@ pub trait LexState: Default {
     fn line_pos_mut(&mut self) -> &mut LinePos;
 }
 
-pub trait LexToken<'a>: Logos<'a> + Default
+pub trait LexToken<'a>: Logos<'a> + Clone + Default + PartialEq
 where
     Self::Extras: LexState,
 {
 }
 
-impl<'a, T: Logos<'a> + Default> LexToken<'a> for T where T::Extras: LexState {}
+impl<'a, T: Logos<'a> + Clone + Default + PartialEq> LexToken<'a> for T where T::Extras: LexState {}
 
 pub fn register_newline<'a, Token>(lex: &mut Lexer<'a, Token>) -> Skip
 where
@@ -218,7 +218,7 @@ impl<R: Read> LazyReaderSource<R> {
             state: &mut LazyReaderSourceState<R>,
             Range { start, end }: Range<usize>,
         ) -> io::Result<bool> {
-            // We can't backtrack 
+            // We can't backtrack
             assert!(start >= state.start_offset);
 
             let buf_len = state.buffer.len();
@@ -298,11 +298,16 @@ impl<R: Read> LazyReaderSource<R> {
 }
 
 impl<R: Read> Source for LazyReaderSource<R> {
-    type Slice<'a> = LazyReaderSourceRef<'a, str> where R: 'a;
+    type Slice<'a>
+        = LazyReaderSourceRef<'a, str>
+    where
+        R: 'a;
 
     fn len(&self) -> usize {
         let state = &*self.0.borrow();
-        state.len.unwrap_or_else(|| state.start_offset + state.buffer.len())
+        state
+            .len
+            .unwrap_or_else(|| state.start_offset + state.buffer.len())
     }
 
     fn is_boundary(&self, index: usize) -> bool {
@@ -340,9 +345,10 @@ impl<R: Read> Source for LazyReaderSource<R> {
         // After a slice operation, data is never accessed again by Logos
         self.0.borrow_mut().consumed = range.start;
 
-        Some(LazyReaderSourceRef(Ref::map(self.slice_bytes(range)?.0, |slice| {
-            std::str::from_utf8(slice).expect("lexer must match only valid utf-8 slices")
-        })))
+        Some(LazyReaderSourceRef(Ref::map(
+            self.slice_bytes(range)?.0,
+            |slice| std::str::from_utf8(slice).expect("lexer must match only valid utf-8 slices"),
+        )))
     }
 }
 

@@ -16,21 +16,24 @@ impl Default for ParserPos {
     }
 }
 
-pub struct Parser<'source, Token>
+pub struct Parser<'source, Token, Error>
 where
     Token: LexToken<'source>,
     Token::Extras: LexState,
+    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
 {
     lexer: Lexer<'source, Token>,
     lookahead_tokens: VecDeque<Result<Token, Token::Error>>,
     pos: ParserPos,
     closed: bool,
+    _boo: std::marker::PhantomData<Error>,
 }
 
-impl<'source, Token> Parser<'source, Token>
+impl<'source, Token, Error> Parser<'source, Token, Error>
 where
     Token: LexToken<'source>,
     Token::Extras: LexState,
+    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
 {
     pub fn new(source: &'source Token::Source) -> Self {
         Self {
@@ -38,6 +41,7 @@ where
             lookahead_tokens: VecDeque::new(),
             pos: ParserPos::default(),
             closed: false,
+            _boo: std::marker::PhantomData,
         }
     }
 
@@ -62,7 +66,7 @@ where
         self.pos.column = self.lexer.span().end - line_start + 1;
     }
 
-    pub fn pop_token(&mut self) -> Result<Token, Token::Error> {
+    pub fn pop_token(&mut self) -> Result<Token, Error> {
         if self.closed {
             // Closed => EOF
             return Ok(Token::default());
@@ -82,10 +86,10 @@ where
             self.close();
         }
 
-        next
+        Ok(next?)
     }
 
-    pub fn peek_token(&mut self) -> Result<&Token, Token::Error> {
+    pub fn peek_token(&mut self) -> Result<&Token, Error> {
         if self.closed {
             // We take the EOF token from the lookahead deque
             return Ok(self
@@ -106,6 +110,117 @@ where
             .front()
             .unwrap()
             .as_ref()
-            .map_err(|err| err.clone())
+            .map_err(|err| Error::from(err.clone()))
+    }
+
+    pub fn pop_and_produce<Ok>(&mut self, val: Ok) -> Result<Ok, Error> {
+        self.pop_token()?;
+        Ok(val)
+    }
+
+    pub fn expect_token(&mut self, expected: Token) -> Result<(), Error> {
+        let actual = self.pop_token()?;
+        if expected != actual {
+            Err(Error::from(ExpectationFailed {
+                expected,
+                actual,
+                _boo: std::marker::PhantomData,
+            }))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn parse_sequence<'iter, Element>(
+        &'iter mut self,
+        element_parser: fn(&mut Parser<'source, Token, Error>) -> Result<Element, Error>,
+        start_token: Token,
+        separator_token: Token,
+        end_token: Token,
+    ) -> ParseSequenceIter<'iter, 'source, Token, Element, Error> {
+        ParseSequenceIter {
+            parser: self,
+            start_token,
+            separator_token,
+            end_token,
+            element_parser,
+            started: false,
+            ended: false,
+        }
+    }
+}
+
+pub struct ExpectationFailed<'a, Token>
+where
+    Token: LexToken<'a>,
+    Token::Extras: LexState,
+{
+    pub expected: Token,
+    pub actual: Token,
+    _boo: std::marker::PhantomData<&'a ()>,
+}
+
+pub struct ParseSequenceIter<'iter, 'source, Token, Element, Error>
+where
+    Token: LexToken<'source>,
+    Token::Extras: LexState,
+    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
+{
+    parser: &'iter mut Parser<'source, Token, Error>,
+    start_token: Token,
+    separator_token: Token,
+    end_token: Token,
+    element_parser: fn(&mut Parser<'source, Token, Error>) -> Result<Element, Error>,
+    started: bool,
+    ended: bool,
+}
+impl<'source, Token, Element, Error> Iterator
+    for ParseSequenceIter<'_, 'source, Token, Element, Error>
+where
+    Token: LexToken<'source>,
+    Token::Extras: LexState,
+    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
+{
+    type Item = Result<Element, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.ended {
+            return None;
+        }
+
+        let first = !self.started;
+
+        if !self.started {
+            self.started = true;
+            if let Err(err) = self.parser.expect_token(self.start_token.clone()) {
+                self.ended = true;
+                return Some(Err(err));
+            }
+        }
+
+        let tok = match self.parser.peek_token() {
+            Ok(tok) => tok,
+            Err(err) => {
+                self.ended = true;
+                return Some(Err(err));
+            }
+        };
+
+        if *tok == self.end_token {
+            self.ended = true;
+            if let Err(err) = self.parser.expect_token(self.end_token.clone()) {
+                return Some(Err(err));
+            }
+            return None;
+        }
+
+        if !first {
+            if let Err(err) = self.parser.expect_token(self.separator_token.clone()) {
+                self.ended = true;
+                return Some(Err(err));
+            }
+        }
+
+        Some((self.element_parser)(self.parser))
     }
 }
