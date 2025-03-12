@@ -39,7 +39,7 @@ impl From<ParseFloatError> for JsonLexError {
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
 #[logos(extras = LinePos)]
 #[logos(error = JsonLexError)]
-#[logos(source = LexSource)]
+#[logos(source = LexSource<'s>)]
 #[logos(skip r"[\ \f\v\r\uFEFF]+")]
 pub enum JsonToken {
     // Parsed using JsonStringToken
@@ -98,6 +98,7 @@ pub enum JsonToken {
     #[token("\t", register_tab)]
     _Tab,
 
+    #[allow(clippy::upper_case_acronyms)]
     #[default]
     EOF,
 }
@@ -105,7 +106,7 @@ pub enum JsonToken {
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
 #[logos(extras = LinePos)]
 #[logos(error = JsonLexError)]
-#[logos(source = LexSource)]
+#[logos(source = LexSource<'s>)]
 pub enum JsonStringToken {
     #[token("\"")]
     Quote,
@@ -116,6 +117,7 @@ pub enum JsonStringToken {
     #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()).map_err(JsonLexError::InvalidEscapeSeq))]
     Escaped(char),
 
+    #[allow(clippy::upper_case_acronyms)]
     #[default]
     EOF,
 }

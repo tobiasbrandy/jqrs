@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_parsing() {
-        let source = LexSource::String(JSONS.to_string());
+        let source = LexSource::str(JSONS);
         let mut parser = JsonParser::new(&source);
         while let Some(json) = parser.next() {
             match json {
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_lexing() {
-        let source = LexSource::String(JSONS.to_string());
+        let source = LexSource::str(JSONS);
         let mut parser = JsonParser::new(&source).0;
 
         let mut pos = *parser.pos();

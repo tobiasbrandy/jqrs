@@ -39,7 +39,7 @@ impl From<ParseFloatError> for FilterLexError {
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
 #[logos(extras = LinePos)]
 #[logos(error = FilterLexError)]
-#[logos(source = LexSource)]
+#[logos(source = LexSource<'s>)]
 #[logos(skip r"[\ \f\v\r\uFEFF]+")]
 pub enum FilterToken {
     // Literals
@@ -252,6 +252,7 @@ pub enum FilterToken {
     #[token("\t", register_tab)]
     _Tab,
 
+    #[allow(clippy::upper_case_acronyms)]
     #[default]
     EOF,
 }
@@ -259,7 +260,7 @@ pub enum FilterToken {
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
 #[logos(extras = LinePos)]
 #[logos(error = FilterLexError)]
-#[logos(source = LexSource)]
+#[logos(source = LexSource<'s>)]
 pub enum FilterStringToken {
     #[token("\"")]
     Quote,
@@ -273,6 +274,7 @@ pub enum FilterStringToken {
     #[token("\\(")]
     Interpolation,
 
+    #[allow(clippy::upper_case_acronyms)]
     #[default]
     EOF,
 }
@@ -368,7 +370,22 @@ mod tests {
     use super::*;
 
     const FILTER: &str = r#"
-
+    [
+        "",
+        true,
+        false,
+        {
+            "string": "Hello, world!",
+            "number": 42,
+            "object": {
+                "key": "value",
+                "b": [1,2]
+            },
+            "array": [1, "two", false, [1,2,3], {"a": 1, "b": true}],
+            "boolean": true,
+            "null": null
+        }
+    ]
     "#;
 
     #[test]

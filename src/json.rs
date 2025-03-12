@@ -1,14 +1,14 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display},
+    fmt::{Debug, Display}, str::FromStr,
 };
 
 use fmt::{format_json, Format};
 
-use crate::math::Number;
+use crate::{lexer::LexSource, math::Number};
 
 pub mod fmt;
-pub mod lexer;
+mod lexer;
 pub mod parser;
 
 #[derive(Clone, PartialEq)]
@@ -21,6 +21,10 @@ pub enum Json {
     Null,
 }
 impl Json {
+    pub fn parser<'a>(source: &'a LexSource) -> parser::JsonParser<'a> {
+        parser::JsonParser::new(source)
+    }
+
     pub fn format(&self, format: Format) -> String {
         format_json(self, format)
     }
@@ -45,5 +49,15 @@ impl Debug for Json {
 impl Display for Json {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.format_compact())
+    }
+}
+impl FromStr for Json {
+    type Err = parser::JsonParserError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match Json::parser(&LexSource::str(s)).parse_next() {
+            Some(ret) => ret,
+            None => Err(parser::JsonParserError::UnexpectedToken(lexer::JsonToken::EOF)),
+        }
     }
 }

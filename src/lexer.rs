@@ -104,12 +104,13 @@ impl Deref for LexSourceRef<'_> {
 }
 
 // All sources types used in jqrs
-pub enum LexSource {
+pub enum LexSource<'source> {
     File(LazyReaderSource<File>),
     Stdin(LazyReaderSource<Stdin>),
     String(String),
+    Str(&'source str),
 }
-impl LexSource {
+impl<'source> LexSource<'source> {
     pub fn file(file: File) -> Self {
         LexSource::File(LazyReaderSource::file(file))
     }
@@ -125,15 +126,20 @@ impl LexSource {
     pub fn string(s: String) -> Self {
         LexSource::String(s)
     }
+
+    pub fn str(s: &'source str) -> Self {
+        LexSource::Str(s)
+    }
 }
-impl Source for LexSource {
-    type Slice<'a> = LexSourceRef<'a>;
+impl Source for LexSource<'_> {
+    type Slice<'a> = LexSourceRef<'a> where Self: 'a;
 
     fn len(&self) -> usize {
         match self {
             LexSource::File(source) => source.len(),
             LexSource::Stdin(source) => source.len(),
             LexSource::String(source) => source.len(),
+            LexSource::Str(source) => source.len(),
         }
     }
 
@@ -142,6 +148,7 @@ impl Source for LexSource {
             LexSource::File(source) => source.read(offset),
             LexSource::Stdin(source) => source.read(offset),
             LexSource::String(source) => source.read(offset),
+            LexSource::Str(source) => source.read(offset),
         }
     }
 
@@ -150,6 +157,7 @@ impl Source for LexSource {
             LexSource::File(source) => source.read_byte(offset),
             LexSource::Stdin(source) => source.read_byte(offset),
             LexSource::String(source) => source.read_byte(offset),
+            LexSource::Str(source) => source.read_byte(offset),
         }
     }
 
@@ -158,6 +166,7 @@ impl Source for LexSource {
             LexSource::File(source) => LexSourceRef::LazyReader(source.slice(range)?),
             LexSource::Stdin(source) => LexSourceRef::LazyReader(source.slice(range)?),
             LexSource::String(source) => LexSourceRef::String(source.slice(range)?),
+            LexSource::Str(source) => LexSourceRef::String(source.slice(range)?),
         })
     }
 
@@ -166,6 +175,7 @@ impl Source for LexSource {
             LexSource::File(source) => source.is_boundary(index),
             LexSource::Stdin(source) => source.is_boundary(index),
             LexSource::String(source) => source.is_boundary(index),
+            LexSource::Str(source) => source.is_boundary(index),
         }
     }
 }
@@ -399,7 +409,7 @@ mod tests {
     #[test]
     fn test() -> io::Result<()> {
         #[derive(Logos, Debug, PartialEq)]
-        #[logos(source = LexSource)]
+        #[logos(source = LexSource<'s>)]
         enum Token {
             #[regex(r"[a-zA-Z]+")]
             Ident,
