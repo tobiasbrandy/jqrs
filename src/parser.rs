@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use logos::{Lexer, Logos};
 
 use crate::lexer::{LexState, LexToken, LinePos};
@@ -23,7 +21,7 @@ where
     Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
 {
     lexer: Lexer<'source, Token>,
-    lookahead_tokens: VecDeque<Result<Token, Token::Error>>,
+    lookahead_tokens: Vec<Result<Token, Token::Error>>,
     pos: ParserPos,
     closed: bool,
     _boo: std::marker::PhantomData<Error>,
@@ -40,7 +38,7 @@ where
     pub fn new(source: &'source Token::Source) -> Self {
         Self {
             lexer: Token::lexer(source),
-            lookahead_tokens: VecDeque::new(),
+            lookahead_tokens: Vec::new(),
             pos: ParserPos::default(),
             closed: false,
             _boo: std::marker::PhantomData,
@@ -56,7 +54,7 @@ where
         self.lookahead_tokens.clear();
 
         // When closed, we leave the lexer in EOF state
-        self.lookahead_tokens.push_front(Ok(Token::default()));
+        self.lookahead_tokens.push(Ok(Token::default()));
     }
 
     pub fn pos(&self) -> &ParserPos {
@@ -64,7 +62,11 @@ where
     }
 
     fn update_pos(&mut self) {
-        let LinePos { line, line_start, tab_count } = self.lexer.extras.line_pos();
+        let LinePos {
+            line,
+            line_start,
+            tab_count,
+        } = self.lexer.extras.line_pos();
 
         self.pos.line = *line;
         self.pos.column = self.lexer.span().end - line_start + 1 + tab_count * (Self::TAB_SIZE - 1);
@@ -78,7 +80,7 @@ where
 
         let next = self
             .lookahead_tokens
-            .pop_front()
+            .pop()
             .or_else(|| self.lexer.next())
             .unwrap_or_else(|| Ok(Token::default()));
 
@@ -93,25 +95,28 @@ where
         Ok(next?)
     }
 
+    pub fn push_token(&mut self, tok: Token) {
+        self.lookahead_tokens.push(Ok(tok));
+    }
+
+    pub fn push_and_then<T>(&mut self, tok: Token, then: impl FnOnce(&mut Self) -> T) -> T {
+        self.lookahead_tokens.push(Ok(tok));
+        then(self)
+    }
+
     pub fn peek_token(&mut self) -> Result<&Token, Error> {
         if self.closed {
             // We take the EOF token from the lookahead deque
-            return Ok(self
-                .lookahead_tokens
-                .front()
-                .unwrap()
-                .as_ref()
-                .ok()
-                .unwrap());
+            return Ok(self.lookahead_tokens.last().unwrap().as_ref().ok().unwrap());
         }
 
         if self.lookahead_tokens.is_empty() {
             self.lookahead_tokens
-                .push_back(self.lexer.next().unwrap_or(Ok(Token::default())));
+                .push(self.lexer.next().unwrap_or(Ok(Token::default())));
         }
 
         self.lookahead_tokens
-            .front()
+            .last()
             .unwrap()
             .as_ref()
             .map_err(|err| Error::from(err.clone()))
@@ -132,7 +137,7 @@ where
 
         Parser {
             lexer: self.lexer.clone().morph::<Token2>(),
-            lookahead_tokens: VecDeque::new(),
+            lookahead_tokens: Vec::new(),
             pos: self.pos,
             closed,
             _boo: std::marker::PhantomData,
@@ -176,13 +181,11 @@ where
     pub fn parse_sequence<'iter, Element>(
         &'iter mut self,
         element_parser: fn(&mut Parser<'source, Token, Error>) -> Result<Element, Error>,
-        start: Token,
         separator: Token,
         end: Token,
     ) -> ParseSequenceIter<'iter, 'source, Token, Element, Error> {
         ParseSequenceIter {
             parser: self,
-            start,
             separator,
             end,
             element_parser,
@@ -209,7 +212,6 @@ where
     Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
 {
     parser: &'iter mut Parser<'source, Token, Error>,
-    start: Token,
     separator: Token,
     end: Token,
     element_parser: fn(&mut Parser<'source, Token, Error>) -> Result<Element, Error>,
@@ -230,15 +232,12 @@ where
             return None;
         }
 
-        let first = !self.started;
-
-        if !self.started {
+        let first = if self.started {
+            false
+        } else {
             self.started = true;
-            if let Err(err) = self.parser.expect_token(self.start.clone()) {
-                self.ended = true;
-                return Some(Err(err));
-            }
-        }
+            true
+        };
 
         let tok = match self.parser.peek_token() {
             Ok(tok) => tok,
@@ -250,9 +249,6 @@ where
 
         if *tok == self.end {
             self.ended = true;
-            if let Err(err) = self.parser.expect_token(self.end.clone()) {
-                return Some(Err(err));
-            }
             return None;
         }
 
@@ -263,6 +259,11 @@ where
             }
         }
 
-        Some((self.element_parser)(self.parser))
+        let elem = (self.element_parser)(self.parser);
+        if elem.is_err() {
+            self.ended = true;
+        }
+
+        Some(elem)
     }
 }

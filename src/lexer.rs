@@ -132,7 +132,10 @@ impl<'source> LexSource<'source> {
     }
 }
 impl Source for LexSource<'_> {
-    type Slice<'a> = LexSourceRef<'a> where Self: 'a;
+    type Slice<'a>
+        = LexSourceRef<'a>
+    where
+        Self: 'a;
 
     fn len(&self) -> usize {
         match self {

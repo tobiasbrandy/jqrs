@@ -1,4 +1,6 @@
-use logos::Logos;
+use std::str::FromStr;
+
+use logos::{Lexer, Logos};
 use rug::float::ParseFloatError;
 
 use crate::{
@@ -10,6 +12,7 @@ use crate::{
 pub enum FilterLexError {
     NumberParseError(ParseFloatError),
     InvalidEscapeSeq(String),
+    InvalidOperator(String),
     #[default]
     InvalidToken,
 }
@@ -18,6 +21,7 @@ impl std::fmt::Display for FilterLexError {
         match self {
             FilterLexError::NumberParseError(err) => write!(f, "{err}"),
             FilterLexError::InvalidEscapeSeq(s) => write!(f, "invalid escape sequence {s}"),
+            FilterLexError::InvalidOperator(s) => write!(f, "invalid operator {s}"),
             FilterLexError::InvalidToken => write!(f, "invalid token"),
         }
     }
@@ -34,6 +38,82 @@ impl From<ParseFloatError> for FilterLexError {
     fn from(err: ParseFloatError) -> Self {
         FilterLexError::NumberParseError(err)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    // Arithmetic Operators
+    Plus,
+    Minus,
+    Times,
+    Div,
+    Mod,
+
+    // Flow Operators
+    Pipe,
+    Alt,
+    Opt,
+    OptAlt,
+    Comma,
+
+    // Assignment Operators
+    Assign,
+    PlusA,
+    MinusA,
+    TimesA,
+    DivA,
+    ModA,
+    PipeA,
+    AltA,
+
+    // Comparison Operators
+    Eq,
+    Neq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Or,
+    And,
+}
+impl FromStr for Op {
+    type Err = FilterLexError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "+" => Ok(Op::Plus),
+            "-" => Ok(Op::Minus),
+            "*" => Ok(Op::Times),
+            "/" => Ok(Op::Div),
+            "%" => Ok(Op::Mod),
+            "|" => Ok(Op::Pipe),
+            "//" => Ok(Op::Alt),
+            "?" => Ok(Op::Opt),
+            "?//" => Ok(Op::OptAlt),
+            "," => Ok(Op::Comma),
+            "=" => Ok(Op::Assign),
+            "+=" => Ok(Op::PlusA),
+            "-=" => Ok(Op::MinusA),
+            "*=" => Ok(Op::TimesA),
+            "/=" => Ok(Op::DivA),
+            "%=" => Ok(Op::ModA),
+            "|=" => Ok(Op::PipeA),
+            "//=" => Ok(Op::AltA),
+            "==" => Ok(Op::Eq),
+            "!=" => Ok(Op::Neq),
+            "<" => Ok(Op::Lt),
+            "<=" => Ok(Op::Le),
+            ">" => Ok(Op::Gt),
+            ">=" => Ok(Op::Ge),
+            "or" => Ok(Op::Or),
+            "and" => Ok(Op::And),
+            _ => Err(FilterLexError::InvalidToken),
+        }
+    }
+}
+
+fn parse_op<'s>(lex: &mut Lexer<'s, FilterToken>) -> Result<Op, FilterLexError> {
+    lex.slice().parse()
 }
 
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
@@ -108,86 +188,36 @@ pub enum FilterToken {
     Loc,
 
     // Arithmetic Operators
-    #[token("+")]
-    Plus,
-
-    #[token("-")]
-    Minus,
-
-    #[token("*")]
-    Times,
-
-    #[token("/")]
-    Div,
-
-    #[token("%")]
-    Mod,
-
+    #[token("+", parse_op)]
+    #[token("-", parse_op)]
+    #[token("*", parse_op)]
+    #[token("/", parse_op)]
+    #[token("%", parse_op)]
     // Flow Operators
-    #[token("|")]
-    Pipe,
-
-    #[token("//")]
-    Alt,
-
-    #[token("?")]
-    Opt,
-
-    #[token("?//")]
-    OptAlt,
-
-    #[token(",")]
-    Comma,
-
+    #[token("|", parse_op)]
+    #[token("//", parse_op)]
+    #[token("?", parse_op)]
+    #[token("?//", parse_op)]
+    #[token(",", parse_op)]
     // Assignment Operators
-    #[token("=")]
-    Assign,
-
-    #[token("+=")]
-    PlusA,
-
-    #[token("-=")]
-    MinusA,
-
-    #[token("*=")]
-    TimesA,
-
-    #[token("/=")]
-    DivA,
-
-    #[token("%=")]
-    ModA,
-
-    #[token("|=")]
-    PipeA,
-
-    #[token("//=")]
-    AltA,
-
+    #[token("=", parse_op)]
+    #[token("+=", parse_op)]
+    #[token("-=", parse_op)]
+    #[token("*=", parse_op)]
+    #[token("/=", parse_op)]
+    #[token("%=", parse_op)]
+    #[token("|=", parse_op)]
+    #[token("//=", parse_op)]
     // Comparison Operators
-    #[token("==")]
-    Eq,
-
-    #[token("!=")]
-    Neq,
-
-    #[token("<")]
-    Lt,
-
-    #[token("<=")]
-    Le,
-
-    #[token(">")]
-    Gt,
-
-    #[token(">=")]
-    Ge,
-
-    #[token("or")]
-    Or,
-
-    #[token("and")]
-    And,
+    #[token("==", parse_op)]
+    #[token("!=", parse_op)]
+    #[token("<", parse_op)]
+    #[token("<=", parse_op)]
+    #[token(">", parse_op)]
+    #[token(">=", parse_op)]
+    #[token("or", parse_op)]
+    #[token("and", parse_op)]
+    Op(Op),
 
     // Special Filters
     #[token(".")]
@@ -218,11 +248,11 @@ pub enum FilterToken {
     RBrace,
 
     #[token(":")]
-    KVDelim,
+    Colon,
 
     // Params
     #[token(";")]
-    ArgDelim,
+    Semicolon,
 
     // Variables
     #[token("$")]
@@ -279,6 +309,38 @@ pub enum FilterStringToken {
     EOF,
 }
 
+impl std::fmt::Display for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Op::Plus => write!(f, "+"),
+            Op::Minus => write!(f, "-"),
+            Op::Times => write!(f, "*"),
+            Op::Div => write!(f, "/"),
+            Op::Mod => write!(f, "%"),
+            Op::Pipe => write!(f, "|"),
+            Op::Alt => write!(f, "//"),
+            Op::Opt => write!(f, "?"),
+            Op::OptAlt => write!(f, "?//"),
+            Op::Comma => write!(f, ","),
+            Op::Assign => write!(f, "="),
+            Op::PlusA => write!(f, "+="),
+            Op::MinusA => write!(f, "-="),
+            Op::TimesA => write!(f, "*="),
+            Op::DivA => write!(f, "/="),
+            Op::ModA => write!(f, "%="),
+            Op::PipeA => write!(f, "|="),
+            Op::AltA => write!(f, "//="),
+            Op::Eq => write!(f, "=="),
+            Op::Neq => write!(f, "!="),
+            Op::Lt => write!(f, "<"),
+            Op::Le => write!(f, "<="),
+            Op::Gt => write!(f, ">"),
+            Op::Ge => write!(f, ">="),
+            Op::Or => write!(f, "or"),
+            Op::And => write!(f, "and"),
+        }
+    }
+}
 impl std::fmt::Display for FilterToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -303,32 +365,7 @@ impl std::fmt::Display for FilterToken {
             FilterToken::Label => write!(f, "label"),
             FilterToken::Break => write!(f, "break"),
             FilterToken::Loc => write!(f, "__loc__"),
-            FilterToken::Plus => write!(f, "+"),
-            FilterToken::Minus => write!(f, "-"),
-            FilterToken::Times => write!(f, "*"),
-            FilterToken::Div => write!(f, "/"),
-            FilterToken::Mod => write!(f, "%"),
-            FilterToken::Pipe => write!(f, "|"),
-            FilterToken::Alt => write!(f, "//"),
-            FilterToken::Opt => write!(f, "?"),
-            FilterToken::OptAlt => write!(f, "?//"),
-            FilterToken::Comma => write!(f, ","),
-            FilterToken::Assign => write!(f, "="),
-            FilterToken::PlusA => write!(f, "+="),
-            FilterToken::MinusA => write!(f, "-="),
-            FilterToken::TimesA => write!(f, "*="),
-            FilterToken::DivA => write!(f, "/="),
-            FilterToken::ModA => write!(f, "%="),
-            FilterToken::PipeA => write!(f, "|="),
-            FilterToken::AltA => write!(f, "//="),
-            FilterToken::Eq => write!(f, "=="),
-            FilterToken::Neq => write!(f, "!="),
-            FilterToken::Lt => write!(f, "<"),
-            FilterToken::Le => write!(f, "<="),
-            FilterToken::Gt => write!(f, ">"),
-            FilterToken::Ge => write!(f, ">="),
-            FilterToken::Or => write!(f, "or"),
-            FilterToken::And => write!(f, "and"),
+            FilterToken::Op(op) => write!(f, "{op}"),
             FilterToken::Dot => write!(f, "."),
             FilterToken::Recr => write!(f, ".."),
             FilterToken::LPar => write!(f, "("),
@@ -337,8 +374,8 @@ impl std::fmt::Display for FilterToken {
             FilterToken::RBrack => write!(f, "]"),
             FilterToken::LBrace => write!(f, "{{"),
             FilterToken::RBrace => write!(f, "}}"),
-            FilterToken::KVDelim => write!(f, ":"),
-            FilterToken::ArgDelim => write!(f, ";"),
+            FilterToken::Colon => write!(f, ":"),
+            FilterToken::Semicolon => write!(f, ";"),
             FilterToken::Var => write!(f, "$"),
             FilterToken::Quote => write!(f, "\""),
             FilterToken::Id(s) => write!(f, "{s}"),
@@ -348,8 +385,7 @@ impl std::fmt::Display for FilterToken {
             FilterToken::_Newline => write!(f, r#"\n"#),
             FilterToken::_Tab => write!(f, r#"\t"#),
             FilterToken::EOF => write!(f, "<EOF>"),
-        }?;
-        Ok(())
+        }
     }
 }
 impl std::fmt::Display for FilterStringToken {

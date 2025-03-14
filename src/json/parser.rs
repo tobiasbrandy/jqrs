@@ -49,7 +49,7 @@ impl Iterator for JsonParser<'_> {
 pub enum JsonParserError {
     LexError(JsonLexError),
     StringParserError(JsonStringParserError),
-    ExpectingNumber(JsonToken),
+    ExpectedNumber(JsonToken),
     UnmatchedExpectation(JsonToken, JsonToken), // expected, actual
     UnexpectedToken(JsonToken),
 }
@@ -58,7 +58,7 @@ impl std::fmt::Display for JsonParserError {
         match self {
             JsonParserError::LexError(err) => write!(f, "{err}"),
             JsonParserError::StringParserError(err) => write!(f, "error parsing string: {err}"),
-            JsonParserError::ExpectingNumber(tok) => write!(f, "expected number got {tok}"),
+            JsonParserError::ExpectedNumber(tok) => write!(f, "expected number got {tok}"),
             JsonParserError::UnmatchedExpectation(expected, actual) => {
                 write!(f, "expected {expected} got {actual}")
             }
@@ -156,20 +156,27 @@ fn Json(parser: &mut JParser) -> JResult<Json> {
 }
 
 fn Array(parser: &mut JParser) -> JResult<Vec<Json>> {
-    parser
-        .parse_sequence(Json, JsonToken::LBrack, JsonToken::Comma, JsonToken::RBrack)
-        .collect::<Result<_, _>>()
+    parser.expect_token(JsonToken::LBrace)?;
+
+    let ret = parser
+        .parse_sequence(Json, JsonToken::Comma, JsonToken::RBrack)
+        .collect::<Result<_, _>>()?;
+
+    parser.expect_token(JsonToken::RBrace)?;
+
+    Ok(ret)
 }
 
 fn Object(parser: &mut JParser) -> JResult<HashMap<String, Json>> {
-    parser
-        .parse_sequence(
-            ObjectElement,
-            JsonToken::LBrace,
-            JsonToken::Comma,
-            JsonToken::RBrace,
-        )
-        .collect::<Result<_, _>>()
+    parser.expect_token(JsonToken::LBrace)?;
+
+    let ret = parser
+        .parse_sequence(ObjectElement, JsonToken::Comma, JsonToken::RBrace)
+        .collect::<Result<_, _>>()?;
+
+    parser.expect_token(JsonToken::RBrace)?;
+
+    Ok(ret)
 }
 
 fn ObjectElement(parser: &mut JParser) -> JResult<(String, Json)> {
@@ -209,7 +216,7 @@ fn Number(parser: &mut JParser) -> JResult<Number> {
     if let JsonToken::Num(n) = tok {
         Ok(n)
     } else {
-        Err(JsonParserError::ExpectingNumber(tok))
+        Err(JsonParserError::ExpectedNumber(tok))
     }
 }
 

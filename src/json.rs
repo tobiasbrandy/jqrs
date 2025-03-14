@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display}, str::FromStr,
+    fmt::{Debug, Display},
+    str::FromStr,
 };
 
 use fmt::{format_json, Format};
@@ -57,7 +58,9 @@ impl FromStr for Json {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match Json::parser(&LexSource::str(s)).parse_next() {
             Some(ret) => ret,
-            None => Err(parser::JsonParserError::UnexpectedToken(lexer::JsonToken::EOF)),
+            None => Err(parser::JsonParserError::UnexpectedToken(
+                lexer::JsonToken::EOF,
+            )),
         }
     }
 }
