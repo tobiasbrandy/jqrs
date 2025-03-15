@@ -1023,7 +1023,7 @@ mod tests {
     use super::*;
 
     const FILTERS: &str = r#"
-    "tobi\(1+1+1)tobi"
+    "\u0000\u0020\u0000" + .
     "#;
 
     #[test]
@@ -1032,7 +1032,7 @@ mod tests {
         let mut parser = FilterParser::new(&source);
         match parser.parse() {
             Ok(filter) => {
-                println!("{filter:#?}");
+                println!("{filter}");
             }
             Err(err) => {
                 let ParserPos { line, column } = parser.pos();
