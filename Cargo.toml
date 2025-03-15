@@ -15,6 +15,6 @@ version = "1.27"
 default-features = false
 features = ["integer", "float", "std"]
 
-# Logos requires this to enable tail call optimizations, and avoid stack overflows
-[profile.dev]
-opt-level = 1
+# Logos requires this to enable tail call optimizations, and avoid stack overflows on big files
+# [profile.dev]
+# opt-level = 1

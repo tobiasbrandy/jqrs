@@ -910,26 +910,77 @@ fn String(parser: &mut FParser) -> FResult<Filter> {
 ///   : string
 ///   | InterpString l_interp Exp r_interp string
 fn InterpString(parser: &mut FParser) -> FResult<Filter> {
-    // TODO: String Interpolation
-    parser.expect_token(FilterToken::Quote)?;
+    fn parse_string(
+        str_parser: &mut Parser<'_, FilterStringToken, FilterStringParserError>,
+    ) -> Result<Filter, FilterStringParserError> {
+        let mut str = String::new();
+
+        loop {
+            match str_parser.pop_token()? {
+                FilterStringToken::String(s) => str.push_str(&s),
+                FilterStringToken::Escaped(c) => str.push(c),
+                tok @ (FilterStringToken::Quote | FilterStringToken::Interpolation) => {
+                    str_parser.push_token(tok);
+                    break;
+                }
+                tok => return Err(FilterStringParserError::UnexpectedToken(tok)),
+            }
+        }
+
+        Ok(Filter::json_string(str))
+    }
 
     // Morph json parser into string parser
     let mut str_parser = parser.morph::<FilterStringToken, FilterStringParserError>();
 
-    let mut str = String::new();
+    let mut filter = parse_string(&mut str_parser)?;
+
     loop {
-        match str_parser.pop_token()? {
-            FilterStringToken::Quote => break,
-            FilterStringToken::String(s) => str.push_str(&s),
-            FilterStringToken::Escaped(c) => str.push(c),
-            tok => return Err(FilterStringParserError::UnexpectedToken(tok).into()),
+        if let FilterStringToken::Quote = str_parser.peek_token()? {
+            // End of string
+            str_parser.expect_token(FilterStringToken::Quote)?;
+            break;
         }
+
+        // String didn't end => interpolation
+        str_parser.expect_token(FilterStringToken::Interpolation)?;
+
+        // Parse interpolated expression
+        let mut inner_parser = str_parser.morph::<FilterToken, FilterParserError>();
+        let exp = Exp(&mut inner_parser)?;
+        inner_parser.expect_token(FilterToken::RPar)?;
+        inner_parser.morph_into(&mut str_parser);
+
+        // Parse string after interpolated expression
+        let string = parse_string(&mut str_parser)?;
+
+        // Concat: previous filter + interpolated expression + string after interpolation
+        filter = Filter::FuncCall(
+            "_plus".to_string(),
+            vec![
+                filter,
+                Filter::FuncCall(
+                    "_plus".to_string(),
+                    vec![
+                        Filter::Pipe(
+                            Box::new(exp),
+                            Box::new(Filter::FuncCall(
+                                "format".to_string(),
+                                vec![Filter::Var("_fmt".to_string())],
+                            )),
+                        ),
+                        string,
+                    ],
+                ),
+            ],
+        );
     }
 
     // Restore json parser
     str_parser.morph_into(parser);
+    parser.push_token(FilterToken::Quote);
 
-    Ok(Filter::json_string(str))
+    Ok(filter)
 }
 
 /// number
@@ -972,7 +1023,7 @@ mod tests {
     use super::*;
 
     const FILTERS: &str = r#"
-    [range(0,1;4,5;1,2)]
+    "tobi\(1+1+1)tobi"
     "#;
 
     #[test]

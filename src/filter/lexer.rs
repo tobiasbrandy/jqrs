@@ -112,7 +112,7 @@ impl FromStr for Op {
     }
 }
 
-fn parse_op<'s>(lex: &mut Lexer<'s, FilterToken>) -> Result<Op, FilterLexError> {
+fn parse_op(lex: &mut Lexer<'_, FilterToken>) -> Result<Op, FilterLexError> {
     lex.slice().parse()
 }
 
