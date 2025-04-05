@@ -16,23 +16,23 @@ pub enum JsonLexError {
 impl std::fmt::Display for JsonLexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JsonLexError::NumberParseError(err) => write!(f, "{err}"),
-            JsonLexError::InvalidEscapeSeq(s) => write!(f, "invalid escape sequence {s}"),
-            JsonLexError::InvalidToken => write!(f, "invalid token"),
+            Self::NumberParseError(err) => write!(f, "{err}"),
+            Self::InvalidEscapeSeq(s) => write!(f, "invalid escape sequence {s}"),
+            Self::InvalidToken => write!(f, "invalid token"),
         }
     }
 }
 impl std::error::Error for JsonLexError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            JsonLexError::NumberParseError(err) => Some(err),
+            Self::NumberParseError(err) => Some(err),
             _ => None,
         }
     }
 }
 impl From<ParseFloatError> for JsonLexError {
     fn from(err: ParseFloatError) -> Self {
-        JsonLexError::NumberParseError(err)
+        Self::NumberParseError(err)
     }
 }
 
@@ -125,24 +125,24 @@ pub enum JsonStringToken {
 impl std::fmt::Display for JsonToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JsonToken::Str(s) => write!(f, "\"{s}\""),
-            JsonToken::Num(n) => write!(f, "{n}"),
-            JsonToken::True => write!(f, "true"),
-            JsonToken::False => write!(f, "false"),
-            JsonToken::Null => write!(f, "null"),
-            JsonToken::NaN => write!(f, "NaN"),
-            JsonToken::InfP => write!(f, "+Infinity"),
-            JsonToken::InfM => write!(f, "-Infinity"),
-            JsonToken::LBrack => write!(f, "["),
-            JsonToken::RBrack => write!(f, "]"),
-            JsonToken::Comma => write!(f, ","),
-            JsonToken::LBrace => write!(f, "{{"),
-            JsonToken::RBrace => write!(f, "}}"),
-            JsonToken::KVDelim => write!(f, ":"),
-            JsonToken::Quote => write!(f, "\""),
-            JsonToken::_Newline => write!(f, r#"\n"#),
-            JsonToken::_Tab => write!(f, r#"\t"#),
-            JsonToken::EOF => write!(f, "<EOF>"),
+            Self::Str(s) => write!(f, "\"{s}\""),
+            Self::Num(n) => write!(f, "{n}"),
+            Self::True => write!(f, "true"),
+            Self::False => write!(f, "false"),
+            Self::Null => write!(f, "null"),
+            Self::NaN => write!(f, "NaN"),
+            Self::InfP => write!(f, "+Infinity"),
+            Self::InfM => write!(f, "-Infinity"),
+            Self::LBrack => write!(f, "["),
+            Self::RBrack => write!(f, "]"),
+            Self::Comma => write!(f, ","),
+            Self::LBrace => write!(f, "{{"),
+            Self::RBrace => write!(f, "}}"),
+            Self::KVDelim => write!(f, ":"),
+            Self::Quote => write!(f, "\""),
+            Self::_Newline => write!(f, r#"\n"#),
+            Self::_Tab => write!(f, r#"\t"#),
+            Self::EOF => write!(f, "<EOF>"),
         }?;
         Ok(())
     }
@@ -150,10 +150,10 @@ impl std::fmt::Display for JsonToken {
 impl std::fmt::Display for JsonStringToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JsonStringToken::Quote => write!(f, "\""),
-            JsonStringToken::String(s) => write!(f, "{s}"),
-            JsonStringToken::Escaped(c) => write!(f, "\\{c}"),
-            JsonStringToken::EOF => write!(f, "<EOF>"),
+            Self::Quote => write!(f, "\""),
+            Self::String(s) => write!(f, "{s}"),
+            Self::Escaped(c) => write!(f, "\\{c}"),
+            Self::EOF => write!(f, "<EOF>"),
         }?;
         Ok(())
     }

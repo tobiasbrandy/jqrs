@@ -11,6 +11,8 @@ use super::{
     Filter, FuncParam,
 };
 
+use FilterToken as FT;
+
 pub struct FilterParser<'a>(Parser<'a, FilterToken, FilterParserError>);
 impl<'a> FilterParser<'a> {
     pub fn new(source: &'a LexSource) -> Self {
@@ -25,7 +27,7 @@ impl<'a> FilterParser<'a> {
 
             let next_tok = parser.pop_token()?;
 
-            if !matches!(next_tok, FilterToken::EOF) {
+            if !matches!(next_tok, FT::EOF) {
                 return Err(FilterParserError::UnexpectedToken(next_tok));
             }
 
@@ -55,30 +57,30 @@ pub enum FilterParserError {
 impl std::fmt::Display for FilterParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FilterParserError::LexError(err) => write!(f, "{err}"),
-            FilterParserError::StringParserError(err) => write!(f, "error parsing string: {err}"),
-            FilterParserError::ExpectedNumber(tok) => write!(f, "expected number got {tok}"),
-            FilterParserError::UnsupportedOperator(op) => write!(f, "unsupported operator {op}"),
-            FilterParserError::NonAssocOp(op) => write!(f, "non-associative operator {op}"),
-            FilterParserError::UnmatchedExpectation(expected, actual) => {
+            Self::LexError(err) => write!(f, "{err}"),
+            Self::StringParserError(err) => write!(f, "error parsing string: {err}"),
+            Self::ExpectedNumber(tok) => write!(f, "expected number got {tok}"),
+            Self::UnsupportedOperator(op) => write!(f, "unsupported operator {op}"),
+            Self::NonAssocOp(op) => write!(f, "non-associative operator {op}"),
+            Self::UnmatchedExpectation(expected, actual) => {
                 write!(f, "expected {expected} got {actual}")
             }
-            FilterParserError::UnexpectedToken(tok) => write!(f, "unexpected token {tok}"),
+            Self::UnexpectedToken(tok) => write!(f, "unexpected token {tok}"),
         }
     }
 }
 impl std::error::Error for FilterParserError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            FilterParserError::LexError(err) => Some(err),
-            FilterParserError::StringParserError(err) => Some(err),
+            Self::LexError(err) => Some(err),
+            Self::StringParserError(err) => Some(err),
             _ => None,
         }
     }
 }
 impl From<FilterLexError> for FilterParserError {
     fn from(err: FilterLexError) -> Self {
-        FilterParserError::LexError(err)
+        Self::LexError(err)
     }
 }
 impl From<ExpectationFailed<'_, FilterToken>> for FilterParserError {
@@ -87,12 +89,12 @@ impl From<ExpectationFailed<'_, FilterToken>> for FilterParserError {
             expected, actual, ..
         }: ExpectationFailed<'_, FilterToken>,
     ) -> Self {
-        FilterParserError::UnmatchedExpectation(expected, actual)
+        Self::UnmatchedExpectation(expected, actual)
     }
 }
 impl From<FilterStringParserError> for FilterParserError {
     fn from(err: FilterStringParserError) -> Self {
-        FilterParserError::StringParserError(err)
+        Self::StringParserError(err)
     }
 }
 
@@ -105,25 +107,25 @@ pub enum FilterStringParserError {
 impl std::fmt::Display for FilterStringParserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FilterStringParserError::LexError(err) => write!(f, "{err}"),
-            FilterStringParserError::UnmatchedExpectation(expected, actual) => {
+            Self::LexError(err) => write!(f, "{err}"),
+            Self::UnmatchedExpectation(expected, actual) => {
                 write!(f, "expected {expected} got {actual}")
             }
-            FilterStringParserError::UnexpectedToken(tok) => write!(f, "Unexpected token {tok}"),
+            Self::UnexpectedToken(tok) => write!(f, "Unexpected token {tok}"),
         }
     }
 }
 impl std::error::Error for FilterStringParserError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            FilterStringParserError::LexError(err) => Some(err),
+            Self::LexError(err) => Some(err),
             _ => None,
         }
     }
 }
 impl From<FilterLexError> for FilterStringParserError {
     fn from(err: FilterLexError) -> Self {
-        FilterStringParserError::LexError(err)
+        Self::LexError(err)
     }
 }
 impl From<ExpectationFailed<'_, FilterStringToken>> for FilterStringParserError {
@@ -132,7 +134,7 @@ impl From<ExpectationFailed<'_, FilterStringToken>> for FilterStringParserError 
             expected, actual, ..
         }: ExpectationFailed<'_, FilterStringToken>,
     ) -> Self {
-        FilterStringParserError::UnmatchedExpectation(expected, actual)
+        Self::UnmatchedExpectation(expected, actual)
     }
 }
 
@@ -183,8 +185,8 @@ type FResult<T> = Result<T, FilterParserError>;
 ///   | {- empty -}
 fn Filter(parser: &mut FParser) -> FResult<Filter> {
     match parser.peek_token()? {
-        FilterToken::Def => FuncDefs(parser),
-        FilterToken::EOF => Ok(Filter::Empty),
+        FT::Def => FuncDefs(parser),
+        FT::EOF => Ok(Filter::Empty),
         _ => Exp(parser),
     }
 }
@@ -199,7 +201,7 @@ fn FuncDefs(parser: &mut FParser) -> FResult<Filter> {
     let (name, params, body) = FuncDef(parser)?;
     defs.push((name, params, Box::new(body)));
 
-    while let FilterToken::Def = parser.peek_token()? {
+    while let FT::Def = parser.peek_token()? {
         let (name, params, body) = FuncDef(parser)?;
         defs.push((name, params, Box::new(body)));
     }
@@ -216,30 +218,30 @@ fn FuncDefs(parser: &mut FParser) -> FResult<Filter> {
 ///   : def id ':' Exp ';'
 ///   | def id '(' Params ')' ':' Exp ';'
 fn FuncDef(parser: &mut FParser) -> FResult<(String, Vec<FuncParam>, Filter)> {
-    parser.expect_token(FilterToken::Def)?;
+    parser.expect_token(FT::Def)?;
 
     let name = match parser.pop_token()? {
-        FilterToken::Id(name) => name,
+        FT::Id(name) => name,
         tok => return Err(FilterParserError::UnexpectedToken(tok)),
     };
 
-    let params = if let FilterToken::LPar = parser.peek_token()? {
-        parser.expect_token(FilterToken::LPar)?;
+    let params = if let FT::LPar = parser.peek_token()? {
+        parser.expect_token(FT::LPar)?;
 
         let params = Params(parser)?;
 
-        parser.expect_token(FilterToken::RPar)?;
+        parser.expect_token(FT::RPar)?;
 
         params
     } else {
         Vec::new()
     };
 
-    parser.expect_token(FilterToken::Colon)?;
+    parser.expect_token(FT::Colon)?;
 
     let body = Exp(parser)?;
 
-    parser.expect_token(FilterToken::Semicolon)?;
+    parser.expect_token(FT::Semicolon)?;
 
     Ok((name, params, body))
 }
@@ -249,7 +251,7 @@ fn FuncDef(parser: &mut FParser) -> FResult<(String, Vec<FuncParam>, Filter)> {
 ///   | Params ';' Param
 fn Params(parser: &mut FParser) -> FResult<Vec<FuncParam>> {
     parser
-        .parse_sequence(Param, FilterToken::Semicolon, FilterToken::RPar)
+        .parse_sequence(Param, FT::Semicolon, FT::RPar)
         .collect::<Result<_, _>>()
 }
 
@@ -260,16 +262,16 @@ fn Params(parser: &mut FParser) -> FResult<Vec<FuncParam>> {
 fn Param(parser: &mut FParser) -> FResult<FuncParam> {
     let tok = parser.pop_token()?;
 
-    if let FilterToken::Id(id) = tok {
+    if let FT::Id(id) = tok {
         return Ok(FuncParam::FilterParam(id));
     }
 
-    if tok != FilterToken::Var {
+    if tok != FT::Var {
         return Err(FilterParserError::UnexpectedToken(tok));
     }
 
     let tok = parser.pop_token()?;
-    if let FilterToken::Id(id) = tok {
+    if let FT::Id(id) = tok {
         return Ok(FuncParam::VarParam(id));
     }
 
@@ -321,38 +323,38 @@ fn Param(parser: &mut FParser) -> FResult<FuncParam> {
 fn Exp(parser: &mut FParser) -> FResult<Filter> {
     fn ExpOp(parser: &mut FParser, min_precedence: u8, assoc: OpAssoc) -> FResult<Filter> {
         let mut left = match parser.pop_token()? {
-            FilterToken::Def => {
-                let (name, params, body) = parser.push_and_then(FilterToken::Def, FuncDef)?;
+            FT::Def => {
+                let (name, params, body) = parser.push_and_then(FT::Def, FuncDef)?;
                 let next = Exp(parser)?;
                 Filter::FuncDef(name, params, Box::new(body), Box::new(next))
             }
-            FilterToken::Reduce => {
+            FT::Reduce => {
                 let term = Term(parser)?;
-                parser.expect_token(FilterToken::As)?;
+                parser.expect_token(FT::As)?;
                 let pattern = Pattern(parser)?;
-                parser.expect_token(FilterToken::LPar)?;
+                parser.expect_token(FT::LPar)?;
                 let init = Exp(parser)?;
-                parser.expect_token(FilterToken::Semicolon)?;
+                parser.expect_token(FT::Semicolon)?;
                 let update = Exp(parser)?;
-                parser.expect_token(FilterToken::RPar)?;
+                parser.expect_token(FT::RPar)?;
                 Filter::Reduce(Box::new(term), pattern, Box::new(init), Box::new(update))
             }
-            FilterToken::Foreach => {
+            FT::Foreach => {
                 let term = Term(parser)?;
-                parser.expect_token(FilterToken::As)?;
+                parser.expect_token(FT::As)?;
                 let pattern = Pattern(parser)?;
-                parser.expect_token(FilterToken::LPar)?;
+                parser.expect_token(FT::LPar)?;
                 let init = Exp(parser)?;
-                parser.expect_token(FilterToken::Semicolon)?;
+                parser.expect_token(FT::Semicolon)?;
                 let update = Exp(parser)?;
 
                 let extract = match parser.pop_token()? {
-                    FilterToken::RPar => Filter::Identity,
-                    FilterToken::Semicolon => Exp(parser)?,
+                    FT::RPar => Filter::Identity,
+                    FT::Semicolon => Exp(parser)?,
                     tok => return Err(FilterParserError::UnexpectedToken(tok)),
                 };
 
-                parser.expect_token(FilterToken::RPar)?;
+                parser.expect_token(FT::RPar)?;
                 Filter::Foreach(
                     Box::new(term),
                     pattern,
@@ -361,12 +363,12 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                     Box::new(extract),
                 )
             }
-            FilterToken::If => {
+            FT::If => {
                 let cond = Exp(parser)?;
-                parser.expect_token(FilterToken::Then)?;
+                parser.expect_token(FT::Then)?;
                 let then = Exp(parser)?;
 
-                let else_ = if let FilterToken::End = parser.peek_token()? {
+                let else_ = if let FT::End = parser.peek_token()? {
                     parser.pop_and_produce(Filter::Identity)?
                 } else {
                     ElseBody(parser)?
@@ -374,11 +376,11 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
                 Filter::IfElse(Box::new(cond), Box::new(then), Box::new(else_))
             }
-            FilterToken::Try => {
+            FT::Try => {
                 let try_ = Exp(parser)?;
 
-                let catch = if let FilterToken::Catch = parser.peek_token()? {
-                    parser.expect_token(FilterToken::Catch)?;
+                let catch = if let FT::Catch = parser.peek_token()? {
+                    parser.expect_token(FT::Catch)?;
                     Exp(parser)?
                 } else {
                     Filter::Empty
@@ -386,17 +388,17 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
                 Filter::TryCatch(Box::new(try_), Box::new(catch))
             }
-            FilterToken::Label => {
-                parser.expect_token(FilterToken::Var)?;
+            FT::Label => {
+                parser.expect_token(FT::Var)?;
                 let name = match parser.pop_token()? {
-                    FilterToken::Id(name) => name,
+                    FT::Id(name) => name,
                     tok => return Err(FilterParserError::UnexpectedToken(tok)),
                 };
-                parser.expect_token(FilterToken::Op(Op::Pipe))?;
+                parser.expect_token(FT::Op(Op::Pipe))?;
                 let next = Exp(parser)?;
                 Filter::Label(name, Box::new(next))
             }
-            FilterToken::Op(Op::Minus) => Filter::FuncCall(
+            FT::Op(Op::Minus) => Filter::FuncCall(
                 "_negate".to_string(),
                 vec![ExpOp(
                     parser,
@@ -408,10 +410,10 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 // Term
                 let term = parser.push_and_then(tok, Term)?;
 
-                if matches!(parser.peek_token()?, FilterToken::As) {
-                    parser.expect_token(FilterToken::As)?;
+                if matches!(parser.peek_token()?, FT::As) {
+                    parser.expect_token(FT::As)?;
                     let pattern = Pattern(parser)?;
-                    parser.expect_token(FilterToken::Op(Op::Pipe))?;
+                    parser.expect_token(FT::Op(Op::Pipe))?;
                     let next = Exp(parser)?;
                     Filter::VarDef(pattern, Box::new(term), Box::new(next))
                 } else {
@@ -424,7 +426,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
         // Operations
         loop {
             let op = match parser.pop_token()? {
-                FilterToken::Op(op) => op,
+                FT::Op(op) => op,
                 tok => {
                     parser.push_token(tok);
                     break;
@@ -439,7 +441,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 || (new_precedence == min_precedence && assoc == OpAssoc::Left)
             {
                 // Reduce
-                parser.push_token(FilterToken::Op(op));
+                parser.push_token(FT::Op(op));
                 break;
             }
 
@@ -472,21 +474,21 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 Op::Assign => Filter::FuncCall("_assign".to_string(), vec![left, right]),
                 Op::Or => Filter::IfElse(
                     Box::new(left),
-                    Box::new(Filter::json_bool(true)),
+                    Box::new(Filter::bool(true)),
                     Box::new(Filter::IfElse(
                         Box::new(right),
-                        Box::new(Filter::json_bool(true)),
-                        Box::new(Filter::json_bool(false)),
+                        Box::new(Filter::bool(true)),
+                        Box::new(Filter::bool(false)),
                     )),
                 ),
                 Op::And => Filter::IfElse(
                     Box::new(left),
                     Box::new(Filter::IfElse(
                         Box::new(right),
-                        Box::new(Filter::json_bool(true)),
-                        Box::new(Filter::json_bool(false)),
+                        Box::new(Filter::bool(true)),
+                        Box::new(Filter::bool(false)),
                     )),
-                    Box::new(Filter::json_bool(false)),
+                    Box::new(Filter::bool(false)),
                 ),
                 Op::Alt => Filter::Alt(Box::new(left), Box::new(right)),
                 Op::AltA => Filter::VarDef(
@@ -533,10 +535,10 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 /// Pattern
 ///   : '$' id
 fn Pattern(parser: &mut FParser) -> FResult<String> {
-    parser.expect_token(FilterToken::Var)?;
+    parser.expect_token(FT::Var)?;
 
     match parser.pop_token()? {
-        FilterToken::Id(id) => Ok(id),
+        FT::Id(id) => Ok(id),
         tok => Err(FilterParserError::UnexpectedToken(tok)),
     }
 }
@@ -547,19 +549,19 @@ fn Pattern(parser: &mut FParser) -> FResult<String> {
 fn ElseBody(parser: &mut FParser) -> FResult<Filter> {
     let mut elifs = Vec::new();
 
-    while let FilterToken::Elif = parser.peek_token()? {
-        parser.expect_token(FilterToken::Elif)?;
+    while let FT::Elif = parser.peek_token()? {
+        parser.expect_token(FT::Elif)?;
 
         let cond = Exp(parser)?;
 
-        parser.expect_token(FilterToken::Then)?;
+        parser.expect_token(FT::Then)?;
 
         let then = Exp(parser)?;
 
         elifs.push((Box::new(cond), Box::new(then)));
     }
 
-    parser.expect_token(FilterToken::Else)?;
+    parser.expect_token(FT::Else)?;
 
     let else_ = Exp(parser)?;
 
@@ -607,8 +609,8 @@ fn ElseBody(parser: &mut FParser) -> FResult<Filter> {
 ///   | Term '[' ':' Exp ']' '?'
 fn Term(parser: &mut FParser) -> FResult<Filter> {
     fn try_opt(parser: &mut FParser, filter: Filter) -> FResult<Filter> {
-        if let FilterToken::Op(Op::Opt) = parser.peek_token()? {
-            parser.expect_token(FilterToken::Op(Op::Opt))?;
+        if let FT::Op(Op::Opt) = parser.peek_token()? {
+            parser.expect_token(FT::Op(Op::Opt))?;
             Ok(Filter::TryCatch(Box::new(filter), Box::new(Filter::Empty)))
         } else {
             Ok(filter)
@@ -616,78 +618,75 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
     }
 
     let mut term = match parser.pop_token()? {
-        FilterToken::Dot => {
-            if matches!(
-                parser.peek_token()?,
-                FilterToken::Quote | FilterToken::Format(_)
-            ) {
+        FT::Dot => {
+            if matches!(parser.peek_token()?, FT::Quote | FT::Format(_)) {
                 let filter = Filter::Project(Box::new(Filter::Identity), Box::new(String(parser)?));
                 try_opt(parser, filter)?
             } else {
                 Filter::Identity
             }
         }
-        FilterToken::Recr => Filter::FuncCall("recurse".to_string(), vec![]),
-        FilterToken::Quote => parser.push_and_then(FilterToken::Quote, String)?,
-        FilterToken::Num(n) => parser.push_and_then(FilterToken::Num(n), Number)?,
-        FilterToken::True => Filter::json_bool(true),
-        FilterToken::False => Filter::json_bool(false),
-        FilterToken::Null => Filter::json_null(),
-        FilterToken::Break => {
-            parser.expect_token(FilterToken::Var)?;
+        FT::Recr => Filter::FuncCall("recurse".to_string(), vec![]),
+        FT::Quote => parser.push_and_then(FT::Quote, String)?,
+        FT::Num(n) => parser.push_and_then(FT::Num(n), Number)?,
+        FT::True => Filter::bool(true),
+        FT::False => Filter::bool(false),
+        FT::Null => Filter::null(),
+        FT::Break => {
+            parser.expect_token(FT::Var)?;
             let tok = parser.pop_token()?;
-            if let FilterToken::Id(id) = tok {
+            if let FT::Id(id) = tok {
                 Filter::Break(id)
             } else {
                 return Err(FilterParserError::UnexpectedToken(tok));
             }
         }
-        FilterToken::Format(format) => {
-            if let FilterToken::Quote = parser.peek_token()? {
-                parser.push_and_then(FilterToken::Format(format), String)?
+        FT::Format(format) => {
+            if let FT::Quote = parser.peek_token()? {
+                parser.push_and_then(FT::Format(format), String)?
             } else {
-                Filter::FuncCall("format".to_string(), vec![Filter::json_string(format)])
+                Filter::FuncCall("format".to_string(), vec![Filter::string(format)])
             }
         }
-        FilterToken::LPar => {
+        FT::LPar => {
             let exp = Exp(parser)?;
-            parser.expect_token(FilterToken::RPar)?;
+            parser.expect_token(FT::RPar)?;
             exp
         }
-        FilterToken::LBrack => {
-            if let FilterToken::RBrack = parser.peek_token()? {
+        FT::LBrack => {
+            if let FT::RBrack = parser.peek_token()? {
                 parser.pop_and_produce(Filter::ArrayLit(Box::new(Filter::Empty)))?
             } else {
                 let exp = Exp(parser)?;
-                parser.expect_token(FilterToken::RBrack)?;
+                parser.expect_token(FT::RBrack)?;
                 Filter::ArrayLit(Box::new(exp))
             }
         }
-        FilterToken::LBrace => {
+        FT::LBrace => {
             let dict = MkDict(parser)?;
-            parser.expect_token(FilterToken::RBrace)?;
+            parser.expect_token(FT::RBrace)?;
             Filter::ObjectLit(dict)
         }
-        FilterToken::Var => match parser.pop_token()? {
-            FilterToken::Loc => Filter::Loc("<top-level>".to_string(), parser.pos().line),
-            FilterToken::Id(id) => Filter::Var(id),
+        FT::Var => match parser.pop_token()? {
+            FT::Loc => Filter::Loc("<top-level>".to_string(), parser.pos().line),
+            FT::Id(id) => Filter::Var(id),
             tok if is_keyword(&tok) => Filter::Var(tok.to_string()),
             tok => return Err(FilterParserError::UnexpectedToken(tok)),
         },
-        FilterToken::Id(id) => {
-            if let FilterToken::LPar = parser.peek_token()? {
-                parser.expect_token(FilterToken::LPar)?;
+        FT::Id(id) => {
+            if let FT::LPar = parser.peek_token()? {
+                parser.expect_token(FT::LPar)?;
                 let args = Args(parser)?;
-                parser.expect_token(FilterToken::RPar)?;
+                parser.expect_token(FT::RPar)?;
                 Filter::FuncCall(id, args)
             } else {
                 Filter::FuncCall(id, vec![])
             }
         }
-        FilterToken::Field(field) => {
+        FT::Field(field) => {
             let filter = Filter::Project(
                 Box::new(Filter::Identity),
-                Box::new(Filter::json_string(field)),
+                Box::new(Filter::string(field)),
             );
             try_opt(parser, filter)?
         }
@@ -696,40 +695,40 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
 
     loop {
         term = match parser.pop_token()? {
-            FilterToken::Field(field) => {
-                Filter::Project(Box::new(term), Box::new(Filter::json_string(field)))
+            FT::Field(field) => {
+                Filter::Project(Box::new(term), Box::new(Filter::string(field)))
             }
-            FilterToken::Dot => Filter::Project(Box::new(term), Box::new(String(parser)?)),
-            FilterToken::LBrack => {
+            FT::Dot => Filter::Project(Box::new(term), Box::new(String(parser)?)),
+            FT::LBrack => {
                 fn parse_slice(parser: &mut FParser, term: Filter) -> FResult<Filter> {
                     let left = match parser.pop_token()? {
-                        FilterToken::RBrack => {
+                        FT::RBrack => {
                             // Term[]
                             return Ok(Filter::Pipe(Box::new(term), Box::new(Filter::Iter)));
                         }
-                        FilterToken::Colon => None, // Term[:Exp]
+                        FT::Colon => None, // Term[:Exp]
                         tok => Some(Box::new(parser.push_and_then(tok, Exp)?)), // Term[Exp] | Term[Exp:] | Term[:Exp]
                     };
 
                     match parser.pop_token()? {
-                        FilterToken::RBrack => {
+                        FT::RBrack => {
                             if let Some(left) = left {
                                 // Term[Exp]
                                 return Ok(Filter::Project(Box::new(term), left));
                             }
                             // Term[:] => Invalid
-                            return Err(FilterParserError::UnexpectedToken(FilterToken::RBrack));
+                            return Err(FilterParserError::UnexpectedToken(FT::RBrack));
                         }
-                        FilterToken::Colon => (), // Term[Exp:Exp] | Term[:Exp] | Term[Exp:]
+                        FT::Colon => (), // Term[Exp:Exp] | Term[:Exp] | Term[Exp:]
                         tok => return Err(FilterParserError::UnexpectedToken(tok)),
                     };
 
                     let right = match parser.pop_token()? {
-                        FilterToken::RBrack => None,                            // Term[Exp:]
+                        FT::RBrack => None,                                     // Term[Exp:]
                         tok => Some(Box::new(parser.push_and_then(tok, Exp)?)), // Term[Exp:Exp] | Term[:Exp]
                     };
 
-                    parser.expect_token(FilterToken::RBrack)?;
+                    parser.expect_token(FT::RBrack)?;
 
                     Ok(Filter::Slice(Box::new(term), left, right))
                 }
@@ -756,21 +755,21 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
 fn is_term(tok: &FilterToken) -> bool {
     matches!(
         tok,
-        FilterToken::Dot
-            | FilterToken::Recr
-            | FilterToken::Quote
-            | FilterToken::Num(_)
-            | FilterToken::True
-            | FilterToken::False
-            | FilterToken::Null
-            | FilterToken::Break
-            | FilterToken::Format(_)
-            | FilterToken::LPar
-            | FilterToken::LBrack
-            | FilterToken::LBrace
-            | FilterToken::Var
-            | FilterToken::Id(_)
-            | FilterToken::Field(_)
+        FT::Dot
+            | FT::Recr
+            | FT::Quote
+            | FT::Num(_)
+            | FT::True
+            | FT::False
+            | FT::Null
+            | FT::Break
+            | FT::Format(_)
+            | FT::LPar
+            | FT::LBrack
+            | FT::LBrace
+            | FT::Var
+            | FT::Id(_)
+            | FT::Field(_)
     )
 }
 
@@ -779,7 +778,7 @@ fn is_term(tok: &FilterToken) -> bool {
 ///   | Args ';' Exp
 fn Args(parser: &mut FParser) -> FResult<Vec<Filter>> {
     parser
-        .parse_sequence(Exp, FilterToken::Semicolon, FilterToken::RPar)
+        .parse_sequence(Exp, FT::Semicolon, FT::RPar)
         .collect::<Result<_, _>>()
 }
 
@@ -789,7 +788,7 @@ fn Args(parser: &mut FParser) -> FResult<Vec<Filter>> {
 ///   | MkDict ',' MkDictPair
 fn MkDict(parser: &mut FParser) -> FResult<Vec<(Filter, Filter)>> {
     parser
-        .parse_sequence(MkDictPair, FilterToken::Op(Op::Comma), FilterToken::RBrace)
+        .parse_sequence(MkDictPair, FT::Op(Op::Comma), FT::RBrace)
         .collect::<Result<_, _>>()
 }
 
@@ -806,20 +805,20 @@ fn MkDict(parser: &mut FParser) -> FResult<Vec<(Filter, Filter)>> {
 fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
     let mut tok = parser.pop_token()?;
 
-    let is_var = matches!(tok, FilterToken::Var);
-    let is_exp = matches!(tok, FilterToken::LPar);
+    let is_var = matches!(tok, FT::Var);
+    let is_exp = matches!(tok, FT::LPar);
 
     if is_var {
         tok = parser.pop_token()?;
     }
 
     let key = match tok {
-        FilterToken::Id(id) => Filter::json_string(id),
-        tok if is_keyword(&tok) => Filter::json_string(tok.to_string()),
-        FilterToken::Quote | FilterToken::Format(_) => parser.push_and_then(tok, String)?,
-        FilterToken::LPar => {
+        FT::Id(id) => Filter::string(id),
+        tok if is_keyword(&tok) => Filter::string(tok.to_string()),
+        FT::Quote | FT::Format(_) => parser.push_and_then(tok, String)?,
+        FT::LPar => {
             let exp = Exp(parser)?;
-            parser.expect_token(FilterToken::RPar)?;
+            parser.expect_token(FT::RPar)?;
             exp
         }
         tok => return Err(FilterParserError::UnexpectedToken(tok)),
@@ -831,11 +830,11 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
 
     let val = if is_var {
         default_val(&key)
-    } else if let FilterToken::Colon = parser.peek_token()? {
+    } else if let FT::Colon = parser.peek_token()? {
         ExpD(parser)?
     } else if is_exp {
         return Err(FilterParserError::UnmatchedExpectation(
-            FilterToken::Colon,
+            FT::Colon,
             parser.pop_token()?,
         ));
     } else {
@@ -853,8 +852,8 @@ fn ExpD(parser: &mut FParser) -> FResult<Filter> {
     fn unary_expd(parser: &mut FParser) -> FResult<Filter> {
         let mut minus_count: usize = 0;
 
-        while let FilterToken::Op(Op::Minus) = parser.peek_token()? {
-            parser.expect_token(FilterToken::Op(Op::Minus))?;
+        while let FT::Op(Op::Minus) = parser.peek_token()? {
+            parser.expect_token(FT::Op(Op::Minus))?;
             minus_count += 1;
         }
 
@@ -870,11 +869,11 @@ fn ExpD(parser: &mut FParser) -> FResult<Filter> {
 
     let left_expd = unary_expd(parser)?;
 
-    if !matches!(parser.peek_token()?, FilterToken::Op(Op::Pipe)) {
+    if !matches!(parser.peek_token()?, FT::Op(Op::Pipe)) {
         return Ok(left_expd);
     }
 
-    parser.expect_token(FilterToken::Op(Op::Pipe))?;
+    parser.expect_token(FT::Op(Op::Pipe))?;
 
     let right_expd = unary_expd(parser)?;
 
@@ -886,22 +885,22 @@ fn ExpD(parser: &mut FParser) -> FResult<Filter> {
 ///   | format lq InterpString rq
 fn String(parser: &mut FParser) -> FResult<Filter> {
     let format = match parser.pop_token()? {
-        FilterToken::Format(format) => format,
+        FT::Format(format) => format,
         tok => {
             parser.push_token(tok);
             "text".to_string()
         }
     };
 
-    parser.expect_token(FilterToken::Quote)?;
+    parser.expect_token(FT::Quote)?;
 
     let string = InterpString(parser)?;
 
-    parser.expect_token(FilterToken::Quote)?;
+    parser.expect_token(FT::Quote)?;
 
     Ok(Filter::VarDef(
         "_fmt".to_string(),
-        Box::new(Filter::json_string(format)),
+        Box::new(Filter::string(format)),
         Box::new(string),
     ))
 }
@@ -927,7 +926,7 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
             }
         }
 
-        Ok(Filter::json_string(str))
+        Ok(Filter::string(str))
     }
 
     // Morph json parser into string parser
@@ -948,7 +947,7 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
         // Parse interpolated expression
         let mut inner_parser = str_parser.morph::<FilterToken, FilterParserError>();
         let exp = Exp(&mut inner_parser)?;
-        inner_parser.expect_token(FilterToken::RPar)?;
+        inner_parser.expect_token(FT::RPar)?;
         inner_parser.morph_into(&mut str_parser);
 
         // Parse string after interpolated expression
@@ -978,7 +977,7 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
 
     // Restore json parser
     str_parser.morph_into(parser);
-    parser.push_token(FilterToken::Quote);
+    parser.push_token(FT::Quote);
 
     Ok(filter)
 }
@@ -986,8 +985,8 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
 /// number
 fn Number(parser: &mut FParser) -> FResult<Filter> {
     let tok = parser.pop_token()?;
-    if let FilterToken::Num(n) = tok {
-        Ok(Filter::json_number(n))
+    if let FT::Num(n) = tok {
+        Ok(Filter::number(n))
     } else {
         Err(FilterParserError::ExpectedNumber(tok))
     }
@@ -996,23 +995,23 @@ fn Number(parser: &mut FParser) -> FResult<Filter> {
 fn is_keyword(tok: &FilterToken) -> bool {
     matches!(
         tok,
-        FilterToken::Module
-            | FilterToken::Import
-            | FilterToken::Include
-            | FilterToken::Def
-            | FilterToken::As
-            | FilterToken::If
-            | FilterToken::Then
-            | FilterToken::Else
-            | FilterToken::Elif
-            | FilterToken::End
-            | FilterToken::Reduce
-            | FilterToken::Foreach
-            | FilterToken::Try
-            | FilterToken::Catch
-            | FilterToken::Label
-            | FilterToken::Break
-            | FilterToken::Loc
+        FT::Module
+            | FT::Import
+            | FT::Include
+            | FT::Def
+            | FT::As
+            | FT::If
+            | FT::Then
+            | FT::Else
+            | FT::Elif
+            | FT::End
+            | FT::Reduce
+            | FT::Foreach
+            | FT::Try
+            | FT::Catch
+            | FT::Label
+            | FT::Break
+            | FT::Loc
     )
 }
 
@@ -1053,7 +1052,7 @@ mod tests {
         let mut pos = *parser.pos();
         loop {
             let tok = parser.pop_token();
-            if matches!(tok, Ok(FilterToken::EOF)) {
+            if matches!(tok, Ok(FT::EOF)) {
                 break;
             }
 

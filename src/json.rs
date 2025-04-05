@@ -41,6 +41,14 @@ impl Json {
     pub fn format_pretty_color(&self) -> String {
         format_json(self, Format::pretty_color())
     }
+
+    pub fn to_bool(&self) -> bool {
+        match self {
+            Self::Bool(b) => *b,
+            Self::Null => false,
+            _ => true,
+        }
+    }
 }
 impl Debug for Json {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
