@@ -186,7 +186,7 @@ type FResult<T> = Result<T, FilterParserError>;
 fn Filter(parser: &mut FParser) -> FResult<Filter> {
     match parser.peek_token()? {
         FT::Def => FuncDefs(parser),
-        FT::EOF => Ok(Filter::Empty),
+        FT::EOF => Ok(Filter::Identity),
         _ => Exp(parser),
     }
 }
@@ -207,7 +207,7 @@ fn FuncDefs(parser: &mut FParser) -> FResult<Filter> {
     }
 
     let (name, params, body) = defs.pop().unwrap();
-    let last = Filter::FuncDef(name, params, body, Box::new(Filter::Empty));
+    let last = Filter::FuncDef(name, params, body, Box::new(Filter(parser)?));
 
     Ok(defs.into_iter().rfold(last, |acc, (name, params, body)| {
         Filter::FuncDef(name, params, body, Box::new(acc))
@@ -350,11 +350,14 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
                 let extract = match parser.pop_token()? {
                     FT::RPar => Filter::Identity,
-                    FT::Semicolon => Exp(parser)?,
+                    FT::Semicolon => {
+                        let exp = Exp(parser)?;
+                        parser.expect_token(FT::RPar)?;
+                        exp
+                    }
                     tok => return Err(FilterParserError::UnexpectedToken(tok)),
                 };
 
-                parser.expect_token(FT::RPar)?;
                 Filter::Foreach(
                     Box::new(term),
                     pattern,
@@ -565,6 +568,8 @@ fn ElseBody(parser: &mut FParser) -> FResult<Filter> {
 
     let else_ = Exp(parser)?;
 
+    parser.expect_token(FT::End)?;
+
     Ok(elifs.into_iter().rfold(else_, |acc, (cond, then)| {
         Filter::IfElse(cond, then, Box::new(acc))
     }))
@@ -684,10 +689,8 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             }
         }
         FT::Field(field) => {
-            let filter = Filter::Project(
-                Box::new(Filter::Identity),
-                Box::new(Filter::string(field)),
-            );
+            let filter =
+                Filter::Project(Box::new(Filter::Identity), Box::new(Filter::string(field)));
             try_opt(parser, filter)?
         }
         tok => return Err(FilterParserError::UnexpectedToken(tok)),
@@ -695,9 +698,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
 
     loop {
         term = match parser.pop_token()? {
-            FT::Field(field) => {
-                Filter::Project(Box::new(term), Box::new(Filter::string(field)))
-            }
+            FT::Field(field) => Filter::Project(Box::new(term), Box::new(Filter::string(field))),
             FT::Dot => Filter::Project(Box::new(term), Box::new(String(parser)?)),
             FT::LBrack => {
                 fn parse_slice(parser: &mut FParser, term: Filter) -> FResult<Filter> {
@@ -706,26 +707,31 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
                             // Term[]
                             return Ok(Filter::Pipe(Box::new(term), Box::new(Filter::Iter)));
                         }
-                        FT::Colon => None, // Term[:Exp]
-                        tok => Some(Box::new(parser.push_and_then(tok, Exp)?)), // Term[Exp] | Term[Exp:] | Term[:Exp]
-                    };
-
-                    match parser.pop_token()? {
-                        FT::RBrack => {
-                            if let Some(left) = left {
-                                // Term[Exp]
-                                return Ok(Filter::Project(Box::new(term), left));
+                        FT::Colon => {
+                            if let FT::RBrack = parser.peek_token()? {
+                                // Term[:] => Invalid
+                                return Err(FilterParserError::UnexpectedToken(
+                                    parser.pop_token()?,
+                                ));
                             }
-                            // Term[:] => Invalid
-                            return Err(FilterParserError::UnexpectedToken(FT::RBrack));
+                            None // Term[:Exp]
                         }
-                        FT::Colon => (), // Term[Exp:Exp] | Term[:Exp] | Term[Exp:]
-                        tok => return Err(FilterParserError::UnexpectedToken(tok)),
+                        tok => {
+                            let left = parser.push_and_then(tok, Exp)?;
+                            match parser.pop_token()? {
+                                FT::RBrack => {
+                                    // Term[Exp]
+                                    return Ok(Filter::Project(Box::new(term), Box::new(left)));
+                                }
+                                FT::Colon => Some(Box::new(left)), // Term[Exp:Exp] | Term[Exp:]
+                                tok => return Err(FilterParserError::UnexpectedToken(tok)),
+                            }
+                        }
                     };
 
-                    let right = match parser.pop_token()? {
-                        FT::RBrack => None,                                     // Term[Exp:]
-                        tok => Some(Box::new(parser.push_and_then(tok, Exp)?)), // Term[Exp:Exp] | Term[:Exp]
+                    let right = match parser.peek_token()? {
+                        FT::RBrack => None,                // Term[Exp:]
+                        _ => Some(Box::new(Exp(parser)?)), // Term[Exp:Exp] | Term[:Exp]
                     };
 
                     parser.expect_token(FT::RBrack)?;
@@ -741,10 +747,6 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
                 break;
             }
         };
-
-        if let Filter::Slice(_, _, _) = term {
-            return try_opt(parser, term);
-        }
 
         term = try_opt(parser, term)?;
     }
@@ -831,6 +833,7 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
     let val = if is_var {
         default_val(&key)
     } else if let FT::Colon = parser.peek_token()? {
+        parser.expect_token(FT::Colon)?;
         ExpD(parser)?
     } else if is_exp {
         return Err(FilterParserError::UnmatchedExpectation(
@@ -1022,7 +1025,7 @@ mod tests {
     use super::*;
 
     const FILTERS: &str = r#"
-    "\u0000\u0020\u0000" + .
+    .[3:3][1:]
     "#;
 
     #[test]

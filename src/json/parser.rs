@@ -158,13 +158,13 @@ fn Json(parser: &mut JParser) -> JResult<Json> {
 }
 
 fn Array(parser: &mut JParser) -> JResult<Vec<Json>> {
-    parser.expect_token(JT::LBrace)?;
+    parser.expect_token(JT::LBrack)?;
 
     let ret = parser
         .parse_sequence(Json, JT::Comma, JT::RBrack)
         .collect::<Result<_, _>>()?;
 
-    parser.expect_token(JT::RBrace)?;
+    parser.expect_token(JT::RBrack)?;
 
     Ok(ret)
 }
