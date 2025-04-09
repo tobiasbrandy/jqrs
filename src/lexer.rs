@@ -2,7 +2,7 @@ use logos::{
     source::{self, Source},
     Lexer, Logos, Skip,
 };
-use std::io::{self, Read, Stdin};
+use std::{io::{self, Read, Stdin}, str::FromStr};
 use std::{cell::Ref, fs::File, ops::Deref, path::Path};
 use std::{cell::RefCell, ops::Range};
 
@@ -44,6 +44,16 @@ where
 }
 
 impl<'a, T: Logos<'a> + Clone + Default + PartialEq> LexToken<'a> for T where T::Extras: LexState {}
+
+pub fn parse<'a, Token, Target, Error>(lex: &mut Lexer<'a, Token>) -> Result<Target, Error>
+where
+    Token: LexToken<'a>,
+    Token::Extras: LexState,
+    <<Token as Logos<'a>>::Source as Source>::Slice<'a>: Deref<Target = str>,
+    Target: FromStr<Err = Error>,
+{
+    lex.slice().parse()
+}
 
 pub fn register_newline<'a, Token>(lex: &mut Lexer<'a, Token>) -> Skip
 where

@@ -805,20 +805,26 @@ fn MkDict(parser: &mut FParser) -> FResult<Vec<(Filter, Filter)>> {
 ///   | Keyword
 ///   | '(' Exp ')' ':' ExpD
 fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
-    let mut tok = parser.pop_token()?;
+    let tok = parser.pop_token()?;
 
-    let is_var = matches!(tok, FT::Var);
-    let is_exp = matches!(tok, FT::LPar);
+    if let FT::Var = tok {
+        let key = match parser.pop_token()? {
+            FT::Id(id) => id,
+            tok if is_keyword(&tok) => tok.to_string(),
+            tok => return Err(FilterParserError::UnexpectedToken(tok)),
+        };
 
-    if is_var {
-        tok = parser.pop_token()?;
+        return Ok((Filter::string(key.clone()), Filter::Var(key)))
     }
+
+    let mut is_exp = false;
 
     let key = match tok {
         FT::Id(id) => Filter::string(id),
         tok if is_keyword(&tok) => Filter::string(tok.to_string()),
         FT::Quote | FT::Format(_) => parser.push_and_then(tok, String)?,
         FT::LPar => {
+            is_exp = true;
             let exp = Exp(parser)?;
             parser.expect_token(FT::RPar)?;
             exp
@@ -826,13 +832,7 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
         tok => return Err(FilterParserError::UnexpectedToken(tok)),
     };
 
-    fn default_val(key: &Filter) -> Filter {
-        Filter::Project(Box::new(Filter::Identity), Box::new(key.clone()))
-    }
-
-    let val = if is_var {
-        default_val(&key)
-    } else if let FT::Colon = parser.peek_token()? {
+    let val = if let FT::Colon = parser.peek_token()? {
         parser.expect_token(FT::Colon)?;
         ExpD(parser)?
     } else if is_exp {
@@ -841,7 +841,7 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
             parser.pop_token()?,
         ));
     } else {
-        default_val(&key)
+        Filter::Project(Box::new(Filter::Identity), Box::new(key.clone()))
     };
 
     Ok((key, val))

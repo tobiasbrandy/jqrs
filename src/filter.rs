@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
-use crate::{json::Json, math::Number};
+use run::{run_filter, RunCtx, RunResult};
+
+use crate::{json::Json, lexer::LexSource, math::Number};
 
 mod lexer;
 pub mod parser;
@@ -65,6 +67,10 @@ pub enum Filter {
     Loc(String, usize), // $__loc__
 }
 impl Filter {
+    pub fn run(&self, ctx: &mut RunCtx, json: &Json) -> RunResult {
+        run_filter(ctx, self, json)
+    }
+
     pub fn string(s: String) -> Self {
         Self::Json(Json::String(s))
     }
@@ -171,5 +177,12 @@ impl std::fmt::Display for Filter {
             Self::Break(name) => write!(f, "break ${name}"),
             Self::Loc(_, _) => write!(f, "$__loc__"),
         }
+    }
+}
+impl FromStr for Filter {
+    type Err = parser::FilterParserError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parser::FilterParser::new(&LexSource::str(s)).parse()
     }
 }

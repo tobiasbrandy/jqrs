@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 use jqrs::{
+    filter::{self, Filter},
     json::parser::{JsonParser, JsonParserError},
     lexer::LexSource,
     parser::ParserPos,
@@ -13,7 +14,7 @@ pub enum SourceType {
 }
 
 fn main() -> ExitCode {
-    let source_type = SourceType::File;
+    let source_type = SourceType::Stdin;
     let input_path = "tests/big.jsonl";
 
     let source = match source_type {
@@ -34,12 +35,40 @@ fn main() -> ExitCode {
         },
     };
 
+    let filter = std::env::args()
+        .nth(1)
+        .unwrap_or(".".to_string())
+        .parse::<Filter>();
+    let filter = match filter {
+        Ok(filter) => filter,
+        Err(err) => {
+            println!("error parsing filter: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut ctx = filter::run::RunCtx::new();
+
     let mut parser = JsonParser::new(&source);
     while let Some(json) = parser.next() {
         match json {
             Ok(json) => {
-                let json_fmt = json.format_pretty_color();
-                print!("{json_fmt}");
+                for result in filter.run(&mut ctx, &json) {
+                    match result {
+                        Ok(json) => {
+                            let json_fmt = json.format_pretty_color();
+                            print!("{json_fmt}");
+                        }
+                        Err(s) => {
+                            match s {
+                                filter::run::RunStopValue::Error(json) => println!("error: {json}"),
+                                filter::run::RunStopValue::Break(_) => todo!(),
+                                filter::run::RunStopValue::Halt(_) => todo!(),
+                            };
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
             }
             Err(err) => {
                 let ParserPos { line, column } = parser.pos();

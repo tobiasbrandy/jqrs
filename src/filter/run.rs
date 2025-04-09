@@ -5,9 +5,13 @@ use std::{
     rc::Rc,
 };
 
+use builtins::{JqBuiltins, RsBuiltins};
+
 use crate::{json::Json, math::Number};
 
 use super::{Filter, FuncParam};
+
+mod builtins;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunStopValue {
@@ -16,9 +20,9 @@ pub enum RunStopValue {
     Halt(String),
 }
 
-type RunValue<T> = Result<T, RunStopValue>;
+pub type RunValue = Result<Json, RunStopValue>;
 
-type RunResult<T> = Vec<RunValue<T>>;
+pub type RunResult = Vec<RunValue>;
 
 #[derive(Debug, Clone, PartialEq)]
 enum RunFile {
@@ -28,48 +32,64 @@ enum RunFile {
 
 #[derive(Debug, Clone)]
 struct FuncDef {
-    ctx: RunCtx,
+    state: RunState,
     params: Vec<String>,
     body: Filter,
 }
 
 #[derive(Debug, Clone)]
-struct FuncDefRef {
-    ctx: Rc<RefCell<RunCtx>>,
+struct CurrentFuncDef {
+    state: Rc<RefCell<RunState>>,
     params: Vec<String>,
     body: Filter,
 }
 
-#[derive(Debug, Clone)]
-struct RunCtx {
+#[derive(Debug, Clone, Default)]
+struct RunState {
     vars: HashMap<String, Json>,
     funcs: HashMap<(String, usize), FuncDef>,
     labels: HashSet<String>,
-    file: RunFile,
-    current_func: Option<(String, usize, FuncDefRef)>,
+    current_func: Option<(String, usize, CurrentFuncDef)>,
 }
-impl RunCtx {
-    fn new(file: RunFile) -> Self {
-        Self {
-            vars: HashMap::new(),
-            funcs: HashMap::new(),
-            labels: HashSet::new(),
-            file,
-            current_func: None,
-        }
-    }
-
+impl RunState {
     fn is_top_level(&self) -> bool {
         self.current_func.is_none()
     }
 }
 
-pub fn run_filter(filter: &Filter, json: &Json) -> RunResult<Json> {
-    let mut ctx = RunCtx::new(RunFile::Main);
-    run(&mut ctx, filter, json)
+#[derive(Debug, Clone)]
+pub struct RunCtx {
+    file: RunFile,
+    rs_builtins: RsBuiltins,
+    jq_builtins: JqBuiltins,
+    state: RunState,
+}
+impl RunCtx {
+    pub fn new() -> Self {
+        let (rs_builtins, jq_builtins) = builtins::builtins();
+        Self {
+            file: RunFile::Main,
+            rs_builtins,
+            jq_builtins,
+            state: RunState::default(),
+        }
+    }
+
+    fn is_top_level(&self) -> bool {
+        self.state.is_top_level()
+    }
+}
+impl Default for RunCtx {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-fn run(ctx: &mut RunCtx, filter: &Filter, json: &Json) -> RunResult<Json> {
+pub fn run_filter(ctx: &mut RunCtx, filter: &Filter, json: &Json) -> RunResult {
+    run(ctx, filter, json)
+}
+
+fn run(ctx: &mut RunCtx, filter: &Filter, json: &Json) -> RunResult {
     match filter {
         Filter::Identity => vec![Ok(json.clone())],
         Filter::Empty => vec![],
@@ -102,8 +122,8 @@ fn run(ctx: &mut RunCtx, filter: &Filter, json: &Json) -> RunResult<Json> {
     }
 }
 
-fn run_var(ctx: &mut RunCtx, name: &str) -> RunResult<Json> {
-    match ctx.vars.get(name) {
+fn run_var(ctx: &mut RunCtx, name: &str) -> RunResult {
+    match ctx.state.vars.get(name) {
         Some(val) => vec![Ok(val.clone())],
         None => vec![Err(str_error(format!("${name} is not defined")))],
     }
@@ -115,10 +135,10 @@ fn run_var_def(
     body: &Filter,
     next: &Filter,
     json: &Json,
-) -> RunResult<Json> {
+) -> RunResult {
     let bodies = run(ctx, body, json);
 
-    let og_var = ctx.vars.remove(name);
+    let og_var = ctx.state.vars.remove(name);
 
     let mut ret = Vec::new();
 
@@ -131,7 +151,7 @@ fn run_var_def(
             }
         };
 
-        ctx.vars.insert(name.to_string(), body);
+        ctx.state.vars.insert(name.to_string(), body);
 
         for next in run(ctx, next, json) {
             match next {
@@ -147,13 +167,13 @@ fn run_var_def(
     }
 
     if let Some(og_var) = og_var {
-        ctx.vars.insert(name.to_string(), og_var);
+        ctx.state.vars.insert(name.to_string(), og_var);
     }
 
     ret
 }
 
-fn run_array_lit(ctx: &mut RunCtx, items: &Filter, json: &Json) -> RunResult<Json> {
+fn run_array_lit(ctx: &mut RunCtx, items: &Filter, json: &Json) -> RunResult {
     let items = run(ctx, items, json);
 
     let mut arr = Vec::with_capacity(items.len());
@@ -168,13 +188,13 @@ fn run_array_lit(ctx: &mut RunCtx, items: &Filter, json: &Json) -> RunResult<Jso
     vec![Ok(Json::Array(arr))]
 }
 
-fn run_object_lit(ctx: &mut RunCtx, items: &[(Filter, Filter)], json: &Json) -> RunResult<Json> {
+fn run_object_lit(ctx: &mut RunCtx, items: &[(Filter, Filter)], json: &Json) -> RunResult {
     fn build_pairs(
         ctx: &mut RunCtx,
         key: &Filter,
         value: &Filter,
         json: &Json,
-    ) -> RunResult<(String, Json)> {
+    ) -> Vec<Result<(String, Json), RunStopValue>> {
         let mut pairs = Vec::new();
         for key in run(ctx, key, json) {
             for value in run(ctx, value, json) {
@@ -205,10 +225,10 @@ fn run_object_lit(ctx: &mut RunCtx, items: &[(Filter, Filter)], json: &Json) -> 
     }
 
     fn cartesian_product(
-        pair_options: &[Vec<RunValue<(String, Json)>>],
+        pair_options: &[Vec<Result<(String, Json), RunStopValue>>],
     ) -> (Vec<HashMap<String, Json>>, Option<RunStopValue>) {
         fn rec(
-            pair_options: &[Vec<RunValue<(String, Json)>>],
+            pair_options: &[Vec<Result<(String, Json), RunStopValue>>],
             current: HashMap<String, Json>,
             result: &mut Vec<HashMap<String, Json>>,
         ) -> Option<RunStopValue> {
@@ -222,7 +242,9 @@ fn run_object_lit(ctx: &mut RunCtx, items: &[(Filter, Filter)], json: &Json) -> 
                     Ok((key, value)) => {
                         let mut new_current = current.clone();
                         new_current.insert(key.clone(), value.clone());
-                        rec(&pair_options[1..], new_current, result)?;
+                        if let Some(error) = rec(&pair_options[1..], new_current, result) {
+                            return Some(error);
+                        }
                     }
                     Err(s) => {
                         return Some(s.clone());
@@ -233,9 +255,9 @@ fn run_object_lit(ctx: &mut RunCtx, items: &[(Filter, Filter)], json: &Json) -> 
             None
         }
 
-        let mut results = Vec::new();
-        let err = rec(pair_options, HashMap::new(), &mut results);
-        (results, err)
+        let mut result = Vec::new();
+        let err = rec(pair_options, HashMap::new(), &mut result);
+        (result, err)
     }
 
     let pair_options = items
@@ -257,16 +279,20 @@ fn run_object_lit(ctx: &mut RunCtx, items: &[(Filter, Filter)], json: &Json) -> 
     ret
 }
 
-fn run_project(ctx: &mut RunCtx, term: &Filter, exp: &Filter, json: &Json) -> RunResult<Json> {
-    fn project(term: &Json, exp: &Json) -> RunValue<Json> {
+fn run_project(ctx: &mut RunCtx, term: &Filter, exp: &Filter, json: &Json) -> RunResult {
+    fn project(term: &Json, exp: &Json) -> RunValue {
         match (term, exp) {
             (Json::Object(obj), Json::String(key)) => {
                 Ok(obj.get(key).cloned().unwrap_or(Json::Null))
             }
-            (Json::Array(arr), Json::Number(Number::Int(n))) => Ok(arr
-                .get(cycle_idx(n, arr.len()))
-                .cloned()
-                .unwrap_or(Json::Null)),
+            (Json::Array(arr), Json::Number(Number::Int(n))) => Ok(if n.is_negative() {
+                (n.clone() + arr.len()).to_usize()
+            } else {
+                n.to_usize()
+            }
+            .and_then(|idx| arr.get(idx))
+            .cloned()
+            .unwrap_or(Json::Null)),
             (Json::Array(_), Json::Number(Number::Decimal(_))) => Ok(Json::Null),
             (Json::Array(haystack), Json::Array(needle)) => Ok(Json::Array(
                 haystack
@@ -326,8 +352,16 @@ fn run_slice(
     left: Option<&Filter>,
     right: Option<&Filter>,
     json: &Json,
-) -> RunResult<Json> {
+) -> RunResult {
     fn num_to_idx(n: &Number, len: usize, round: rug::float::Round) -> Option<usize> {
+        fn cycle_idx(n: &rug::Integer, len: usize) -> usize {
+            if n.is_negative() {
+                (n.clone() + len).to_usize().unwrap_or(usize::MIN)
+            } else {
+                n.to_usize().unwrap_or(usize::MAX)
+            }
+        }
+
         match n {
             Number::Int(n) => Some(cycle_idx(n, len)),
             Number::Decimal(f) => {
@@ -342,7 +376,7 @@ fn run_slice(
         }
     }
 
-    fn slice(term: &Json, left: &Json, right: &Json) -> RunValue<Json> {
+    fn slice(term: &Json, left: &Json, right: &Json) -> RunValue {
         match (term, left, right) {
             (Json::Array(arr), Json::Number(l), Json::Number(r)) => {
                 let len = arr.len();
@@ -354,6 +388,10 @@ fn run_slice(
                     Some(r) => r,
                     None => return Ok(Json::Null),
                 };
+
+                if r < l {
+                    return Ok(Json::Array(vec![]));
+                }
 
                 Ok(Json::Array(arr[l..r].to_vec()))
             }
@@ -371,13 +409,11 @@ fn run_slice(
                 Ok(Json::String(s[l..r].to_string()))
             }
             (Json::Null, Json::Number(_), Json::Number(_)) => Ok(Json::Null),
-            (Json::Array(_), anyl, anyr) | (Json::Null, anyl, anyr) => {
-                Err(str_error(format!(
-                    "Start and end indices of an array slice must be numbers, not {} and {}",
-                    json_fmt_type(anyl),
-                    json_fmt_type(anyr)
-                )))
-            }
+            (Json::Array(_), anyl, anyr) | (Json::Null, anyl, anyr) => Err(str_error(format!(
+                "Start and end indices of an array slice must be numbers, not {} and {}",
+                json_fmt_type(anyl),
+                json_fmt_type(anyr)
+            ))),
             (any, _, _) => Err(str_error(
                 json_fmt_error(any) + " cannot be sliced, only arrays or null",
             )),
@@ -435,7 +471,7 @@ fn run_slice(
     ret
 }
 
-fn run_iter(json: &Json) -> RunResult<Json> {
+fn run_iter(json: &Json) -> RunResult {
     match json {
         Json::Array(arr) => arr.iter().map(|json| Ok(json.clone())).collect(),
         Json::Object(obj) => obj.values().map(|json| Ok(json.clone())).collect(),
@@ -446,7 +482,7 @@ fn run_iter(json: &Json) -> RunResult<Json> {
     }
 }
 
-fn run_pipe(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunResult<Json> {
+fn run_pipe(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunResult {
     let mut ret = Vec::new();
 
     for left_json in run(ctx, left, json) {
@@ -464,7 +500,7 @@ fn run_pipe(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> Run
     ret
 }
 
-fn run_alt(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunResult<Json> {
+fn run_alt(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunResult {
     let mut valid_left = Vec::new();
 
     for json in run(ctx, left, json) {
@@ -488,7 +524,7 @@ fn run_alt(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunR
     }
 }
 
-fn run_try_catch(ctx: &mut RunCtx, try_: &Filter, catch_: &Filter, json: &Json) -> RunResult<Json> {
+fn run_try_catch(ctx: &mut RunCtx, try_: &Filter, catch_: &Filter, json: &Json) -> RunResult {
     let mut ret = Vec::new();
 
     for json in run(ctx, try_, json) {
@@ -519,7 +555,7 @@ fn run_try_catch(ctx: &mut RunCtx, try_: &Filter, catch_: &Filter, json: &Json) 
     ret
 }
 
-fn run_comma(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunResult<Json> {
+fn run_comma(ctx: &mut RunCtx, left: &Filter, right: &Filter, json: &Json) -> RunResult {
     let mut ret = Vec::new();
 
     for val in run(ctx, left, json) {
@@ -555,7 +591,7 @@ fn run_if_else(
     then: &Filter,
     else_: &Filter,
     json: &Json,
-) -> RunResult<Json> {
+) -> RunResult {
     let mut ret = Vec::new();
 
     for cond in run(ctx, cond, json) {
@@ -591,10 +627,10 @@ fn run_reduce(
     init: &Filter,
     update: &Filter,
     json: &Json,
-) -> RunResult<Json> {
+) -> RunResult {
     fn reset_var(ctx: &mut RunCtx, name: &str, var: Option<Json>) {
         if let Some(var) = var {
-            ctx.vars.insert(name.to_string(), var);
+            ctx.state.vars.insert(name.to_string(), var);
         }
     }
 
@@ -614,7 +650,7 @@ fn run_reduce(
 
         let stream = run(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
 
-        let og_var = ctx.vars.remove(name);
+        let og_var = ctx.state.vars.remove(name);
 
         let mut acc = base;
         for val in stream {
@@ -627,7 +663,7 @@ fn run_reduce(
                 }
             };
 
-            ctx.vars.insert(name.to_string(), val.clone());
+            ctx.state.vars.insert(name.to_string(), val.clone());
 
             let updates = run(ctx, update, &acc);
             acc = match updates.into_iter().try_fold(None, |_, item| item.map(Some)) {
@@ -655,10 +691,10 @@ fn run_foreach(
     update: &Filter,
     extract: &Filter,
     json: &Json,
-) -> RunResult<Json> {
+) -> RunResult {
     fn reset_var(ctx: &mut RunCtx, name: &str, var: Option<Json>) {
         if let Some(var) = var {
-            ctx.vars.insert(name.to_string(), var);
+            ctx.state.vars.insert(name.to_string(), var);
         }
     }
 
@@ -678,7 +714,7 @@ fn run_foreach(
 
         let stream = run(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
 
-        let og_var = ctx.vars.remove(name);
+        let og_var = ctx.state.vars.remove(name);
 
         let mut acc = base;
         for val in stream {
@@ -691,7 +727,7 @@ fn run_foreach(
                 }
             };
 
-            ctx.vars.insert(name.to_string(), val.clone());
+            ctx.state.vars.insert(name.to_string(), val.clone());
 
             let updates = run(ctx, update, &acc);
             if updates.is_empty() {
@@ -735,7 +771,7 @@ fn run_func_def(
     body: &Filter,
     next: &Filter,
     json: &Json,
-) -> RunResult<Json> {
+) -> RunResult {
     let mut body = body.clone();
     let mut param_names = Vec::new();
 
@@ -755,24 +791,24 @@ fn run_func_def(
         }
     }
 
-    let prev_func = ctx.funcs.remove(&(name.to_string(), params.len()));
+    let prev_func = ctx.state.funcs.remove(&(name.to_string(), params.len()));
 
     {
-        let func_ctx = Rc::new(RefCell::new(ctx.clone()));
-        func_ctx.borrow_mut().current_func = Some((
+        let func_state = Rc::new(RefCell::new(ctx.state.clone()));
+        func_state.borrow_mut().current_func = Some((
             name.to_string(),
             params.len(),
-            FuncDefRef {
-                ctx: func_ctx.clone(),
+            CurrentFuncDef {
+                state: func_state.clone(),
                 params: param_names.clone(),
                 body: body.clone(),
             },
         ));
 
-        ctx.funcs.insert(
+        ctx.state.funcs.insert(
             (name.to_string(), params.len()),
             FuncDef {
-                ctx: func_ctx.borrow().clone(),
+                state: func_state.borrow().clone(),
                 params: param_names,
                 body,
             },
@@ -787,58 +823,77 @@ fn run_func_def(
     let restore_scope = ctx.file == RunFile::Main || ctx.is_top_level();
     if restore_scope {
         if let Some(prev_func) = prev_func {
-            ctx.funcs
+            ctx.state
+                .funcs
                 .insert((name.to_string(), params.len()), prev_func);
         } else {
-            ctx.funcs.remove(&(name.to_string(), params.len()));
+            ctx.state.funcs.remove(&(name.to_string(), params.len()));
         }
     }
 
     ret
 }
 
-fn run_func_call(ctx: &mut RunCtx, name: &str, args: &[Filter], json: &Json) -> RunResult<Json> {
-    let argc = args.len();
-
-    let mut func = {
-        match &ctx.current_func {
-            Some((curr_name, curr_argc, curr_func)) if curr_name == name && *curr_argc == argc => {
+fn run_func_call(ctx: &mut RunCtx, name: &str, args: &[Filter], json: &Json) -> RunResult {
+    fn func_call(
+        ctx: &mut RunCtx,
+        mut func: FuncDef,
+        args: &[Filter],
+        json: &Json,
+    ) -> RunResult {
+        for (param, arg) in zip(func.params, args) {
+            func.state.funcs.insert(
+                (param, 0),
                 FuncDef {
-                    ctx: curr_func.ctx.borrow().clone(),
-                    params: curr_func.params.clone(),
-                    body: curr_func.body.clone(),
-                }
-            }
-            _ => match ctx.funcs.get(&(name.to_string(), argc)) {
-                Some(func) => func.clone(),
-                None => {
-                    return vec![Err(str_error(format!(
-                        "{name}/{argc} is not defined"
-                    )))]
-                }
-            },
+                    state: ctx.state.clone(),
+                    params: vec![],
+                    body: arg.clone(),
+                },
+            );
         }
-    };
 
-    for (param, arg) in zip(func.params, args) {
-        func.ctx.funcs.insert(
-            (param, 0),
-            FuncDef {
-                ctx: ctx.clone(),
-                params: vec![],
-                body: arg.clone(),
-            },
-        );
+        std::mem::swap(&mut ctx.state, &mut func.state);
+
+        let ret = run(ctx, &func.body, json);
+
+        std::mem::swap(&mut ctx.state, &mut func.state);
+
+        ret
     }
 
-    run(&mut func.ctx, &func.body, json)
+    let argc = args.len();
+
+    if let Some((curr_name, curr_argc, curr_func)) = &ctx.state.current_func {
+        if curr_name == name && *curr_argc == argc {
+            let func_def = FuncDef {
+                state: curr_func.state.borrow().clone(),
+                params: curr_func.params.clone(),
+                body: curr_func.body.clone(),
+            };
+            return func_call(ctx, func_def, args, json);
+        }
+    }
+
+    if let Some(func) = ctx.state.funcs.get(&(name.to_string(), argc)) {
+        return func_call(ctx, func.clone(), args, json);
+    }
+
+    if let Some(func) = ctx.jq_builtins.get(&(name, argc)) {
+        return func_call(ctx, func.clone(), args, json);
+    }
+
+    if let Some(func) = ctx.rs_builtins.get(&(name, argc)) {
+        return (func)(ctx, args, json);
+    }
+
+    vec![Err(str_error(format!("{name}/{argc} is not defined")))]
 }
 
-fn run_label(ctx: &mut RunCtx, label: &str, then: &Filter, json: &Json) -> RunResult<Json> {
-    let inserted = ctx.labels.insert(label.to_string());
+fn run_label(ctx: &mut RunCtx, label: &str, then: &Filter, json: &Json) -> RunResult {
+    let inserted = ctx.state.labels.insert(label.to_string());
     let breaked_then = run(ctx, then, json);
     if inserted {
-        ctx.labels.remove(label);
+        ctx.state.labels.remove(label);
     }
 
     breaked_then
@@ -850,45 +905,28 @@ fn run_label(ctx: &mut RunCtx, label: &str, then: &Filter, json: &Json) -> RunRe
         .collect()
 }
 
-fn run_break(ctx: &mut RunCtx, label: &str) -> RunResult<Json> {
-    if ctx.labels.contains(label) {
+fn run_break(ctx: &mut RunCtx, label: &str) -> RunResult {
+    if ctx.state.labels.contains(label) {
         vec![Err(RunStopValue::Break(label.to_string()))]
     } else {
-        vec![Err(str_error(format!(
-            "$*label-{label} is not defined"
-        )))]
+        vec![Err(str_error(format!("$*label-{label} is not defined")))]
     }
 }
 
-fn run_loc(file: &str, line: usize) -> RunResult<Json> {
+fn run_loc(file: &str, line: usize) -> RunResult {
     vec![Ok(Json::Object(HashMap::from([
         ("file".to_string(), Json::String(file.to_string())),
         ("line".to_string(), Json::Number(Number::Int(line.into()))),
     ])))]
 }
 
-// ---------------------- Utils ------------------------ //
-
-fn cycle_idx(n: &rug::Integer, len: usize) -> usize {
-    if n.is_negative() {
-        (n.clone() + len).to_usize()
-    } else {
-        n.to_usize()
-    }
-    .unwrap_or(if n.is_positive() {
-        usize::MAX
-    } else {
-        usize::MIN
-    })
-}
-
 // ------------------- Error Utils --------------------- //
 
-fn str_error(s: String) -> RunStopValue {
+pub(crate) fn str_error(s: String) -> RunStopValue {
     RunStopValue::Error(Json::String(s))
 }
 
-fn json_fmt_error(json: &Json) -> String {
+pub(crate) fn json_fmt_error(json: &Json) -> String {
     format!("{} ({})", json_fmt_type(json), json_fmt_bounded(json))
 }
 
@@ -912,5 +950,36 @@ fn json_fmt_type(json: &Json) -> &'static str {
         Json::Number(_) => "number",
         Json::Bool(_) => "bool",
         Json::Null => "null",
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_run() {
+        let input = r#"
+            {"a": [1,2], "b": [3,4]}
+        "#;
+        let filter = r#"
+            .a + .b
+        "#;
+
+        let input: Json = input.parse().expect("json input parse error");
+        println!("{input:?}");
+
+        let filter: Filter = filter.parse().expect("filter parse error");
+        println!("{filter:?}");
+
+        filter
+            .run(&mut RunCtx::new(), &input)
+            .into_iter()
+            .map(|r| r.map(|json| json.format_compact()))
+            .for_each(|r| match r {
+                Ok(json) => println!("{json}"),
+                Err(RunStopValue::Error(err)) => println!("error: {err}"),
+                Err(s) => println!("{s:?}"),
+            });
     }
 }

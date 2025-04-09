@@ -2,8 +2,8 @@ use logos::Logos;
 use rug::float::ParseFloatError;
 
 use crate::{
-    lexer::{parse_escaped, register_newline, register_tab, LexSource, LinePos},
-    math::{parse_number, Number},
+    lexer::{parse, parse_escaped, register_newline, register_tab, LexSource, LinePos},
+    math::Number,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -45,7 +45,7 @@ pub enum JsonToken {
     // Parsed using JsonStringToken
     Str(String),
 
-    #[regex(r#"[\+\-]?([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, |lex| parse_number(&lex.slice()))]
+    #[regex(r#"[\+\-]?([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, parse)]
     Num(Number),
 
     #[token("true")]

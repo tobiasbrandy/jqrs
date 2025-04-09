@@ -1,11 +1,11 @@
 use std::str::FromStr;
 
-use logos::{Lexer, Logos};
+use logos::Logos;
 use rug::float::ParseFloatError;
 
 use crate::{
-    lexer::{parse_escaped, register_newline, register_tab, LexSource, LinePos},
-    math::{parse_number, Number},
+    lexer::{parse, parse_escaped, register_newline, register_tab, LexSource, LinePos},
+    math::Number,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -112,10 +112,6 @@ impl FromStr for Op {
     }
 }
 
-fn parse_op(lex: &mut Lexer<'_, FilterToken>) -> Result<Op, FilterLexError> {
-    lex.slice().parse()
-}
-
 #[derive(Logos, Debug, Clone, PartialEq, Default)]
 #[logos(extras = LinePos)]
 #[logos(error = FilterLexError)]
@@ -132,7 +128,7 @@ pub enum FilterToken {
     #[token("null")]
     Null,
 
-    #[regex(r#"([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, |lex| parse_number(&lex.slice()))]
+    #[regex(r#"([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, |lex| lex.slice().parse())]
     Num(Number),
 
     // Keywords
@@ -188,35 +184,35 @@ pub enum FilterToken {
     Loc,
 
     // Arithmetic Operators
-    #[token("+", parse_op)]
-    #[token("-", parse_op)]
-    #[token("*", parse_op)]
-    #[token("/", parse_op)]
-    #[token("%", parse_op)]
+    #[token("+", parse)]
+    #[token("-", parse)]
+    #[token("*", parse)]
+    #[token("/", parse)]
+    #[token("%", parse)]
     // Flow Operators
-    #[token("|", parse_op)]
-    #[token("//", parse_op)]
-    #[token("?", parse_op)]
-    #[token("?//", parse_op)]
-    #[token(",", parse_op)]
+    #[token("|", parse)]
+    #[token("//", parse)]
+    #[token("?", parse)]
+    #[token("?//", parse)]
+    #[token(",", parse)]
     // Assignment Operators
-    #[token("=", parse_op)]
-    #[token("+=", parse_op)]
-    #[token("-=", parse_op)]
-    #[token("*=", parse_op)]
-    #[token("/=", parse_op)]
-    #[token("%=", parse_op)]
-    #[token("|=", parse_op)]
-    #[token("//=", parse_op)]
+    #[token("=", parse)]
+    #[token("+=", parse)]
+    #[token("-=", parse)]
+    #[token("*=", parse)]
+    #[token("/=", parse)]
+    #[token("%=", parse)]
+    #[token("|=", parse)]
+    #[token("//=", parse)]
     // Comparison Operators
-    #[token("==", parse_op)]
-    #[token("!=", parse_op)]
-    #[token("<", parse_op)]
-    #[token("<=", parse_op)]
-    #[token(">", parse_op)]
-    #[token(">=", parse_op)]
-    #[token("or", parse_op)]
-    #[token("and", parse_op)]
+    #[token("==", parse)]
+    #[token("!=", parse)]
+    #[token("<", parse)]
+    #[token("<=", parse)]
+    #[token(">", parse)]
+    #[token(">=", parse)]
+    #[token("or", parse)]
+    #[token("and", parse)]
     Op(Op),
 
     // Special Filters
