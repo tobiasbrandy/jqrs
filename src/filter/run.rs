@@ -1,15 +1,19 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    future::Future,
     iter::zip,
     rc::Rc,
 };
 
 use builtins::{JqBuiltins, RsBuiltins};
+use ouroboros::self_referencing;
 
 use crate::{json::Json, math::Number};
 
 use super::{Filter, FuncParam};
+
+use genawaiter::stack::{Co, Gen, Shelf};
 
 mod builtins;
 
@@ -835,12 +839,7 @@ fn run_func_def(
 }
 
 fn run_func_call(ctx: &mut RunCtx, name: &str, args: &[Filter], json: &Json) -> RunResult {
-    fn func_call(
-        ctx: &mut RunCtx,
-        mut func: FuncDef,
-        args: &[Filter],
-        json: &Json,
-    ) -> RunResult {
+    fn func_call(ctx: &mut RunCtx, mut func: FuncDef, args: &[Filter], json: &Json) -> RunResult {
         for (param, arg) in zip(func.params, args) {
             func.state.funcs.insert(
                 (param, 0),
@@ -953,9 +952,179 @@ fn json_fmt_type(json: &Json) -> &'static str {
     }
 }
 
+////// TEST GENERATORS //////
+
+type RunOut<'a> = Co<'a, Json>;
+
+type RunGenFuture = std::pin::Pin<Box<dyn Future<Output = Option<RunStopValue>> + 'static>>;
+
+#[self_referencing]
+struct InternalRunGen<'a> {
+    shelf: Shelf<Json, (), RunGenFuture>,
+
+    ctx: &'a RunCtx,
+    filter: &'a Filter,
+    json: &'a Json,
+
+    #[borrows(mut shelf, ctx, filter, json)]
+    #[not_covariant]
+    gen: Gen<'this, Json, (), RunGenFuture>,
+}
+struct RunGen<'a> {
+    inner: InternalRunGen<'a>,
+    end: Option<RunStopValue>,
+}
+impl<'a> RunGen<'a> {
+    pub fn build(ctx: &'a RunCtx, filter: &'a Filter, json: &'a Json) -> Self {
+        unsafe fn to_static<'a, F: Future<Output = Option<RunStopValue>> + 'a>(
+            fut: F,
+        ) -> RunGenFuture {
+            std::mem::transmute::<
+                std::pin::Pin<Box<dyn Future<Output = Option<RunStopValue>> + 'a>>,
+                RunGenFuture,
+            >(Box::pin(fut))
+        }
+
+        Self {
+            inner: InternalRunGenBuilder {
+                shelf: Shelf::new(),
+                ctx,
+                filter,
+                json,
+                gen_builder: |shelf, ctx, filter, json| unsafe {
+                    Gen::new(shelf, |co| to_static(run_gen(co, ctx, filter, json)))
+                },
+            }
+            .build(),
+            end: None,
+        }
+    }
+
+    pub fn resume(&mut self) -> genawaiter::GeneratorState<Json, Option<RunStopValue>> {
+        self.inner.with_gen_mut(|gen| gen.resume())
+    }
+
+    pub fn end(&mut self) -> Option<RunStopValue> {
+        self.end.take()
+    }
+}
+impl Iterator for RunGen<'_> {
+    type Item = Json;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.resume() {
+            genawaiter::GeneratorState::Yielded(val) => Some(val),
+            genawaiter::GeneratorState::Complete(end) => {
+                self.end = end;
+                None
+            }
+        }
+    }
+}
+
+macro_rules! yield_ {
+    ($out:ident, $val:expr) => {
+        $out.yield_($val).await
+    }
+}
+
+pub async fn run_gen(
+    out: RunOut<'_>,
+    ctx: &RunCtx,
+    filter: &Filter,
+    json: &Json,
+) -> Option<RunStopValue> {
+    match filter {
+        Filter::Identity => {
+            yield_!(out, json.clone());
+            None
+        }
+        Filter::Empty => None,
+        Filter::Pipe(left, right) => run_pipe_gen(out, ctx, left, right, json).await,
+        Filter::Comma(left, right) => run_comma_gen(out, ctx, left, right, json).await,
+        _ => panic!("Not implemented {filter:?}"),
+    }
+}
+
+async fn run_pipe_gen(
+    out: RunOut<'_>,
+    ctx: &RunCtx,
+    left: &Filter,
+    right: &Filter,
+    json: &Json,
+) -> Option<RunStopValue> {
+    let mut left_jsons = RunGen::build(ctx, left, json);
+    for left_json in &mut left_jsons {
+        let mut right_jsons = RunGen::build(ctx, right, &left_json);
+        for right_json in &mut right_jsons {
+            yield_!(out, right_json);
+        }
+        if let Some(stop) = right_jsons.end() {
+            return Some(stop);
+        }
+    }
+    if let Some(stop) = left_jsons.end() {
+        return Some(stop);
+    }
+
+    None
+}
+
+async fn run_comma_gen(
+    out: RunOut<'_>,
+    ctx: &RunCtx,
+    left: &Filter,
+    right: &Filter,
+    json: &Json,
+) -> Option<RunStopValue> {
+    let mut left_jsons = RunGen::build(ctx, left, json);
+    for left_json in &mut left_jsons {
+        yield_!(out, left_json);
+    }
+    if let Some(stop) = left_jsons.end() {
+        return Some(stop);
+    }
+
+    let mut right_jsons = RunGen::build(ctx, right, json);
+    for right_json in &mut right_jsons {
+        yield_!(out, right_json);
+    }
+    if let Some(stop) = right_jsons.end() {
+        return Some(stop);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn test_run_gen() {
+        let input = r#"
+            "tobi"
+        "#;
+        let filter = r#"
+            .,.|.,.
+        "#;
+
+        let json = input.parse::<Json>().expect("json input parse error");
+        let filter = filter.parse::<Filter>().expect("filter parse error");
+        let ctx = RunCtx::new();
+
+        let mut results = RunGen::build(&ctx, &filter, &json);
+        for json in &mut results {
+            print!("{json:?}")
+        }
+        if let Some(stop) = results.end() {
+            match stop {
+                RunStopValue::Error(err) => print!("error: {err}"),
+                RunStopValue::Break(err) => print!("error: {err}"),
+                RunStopValue::Halt(err) => print!("error: {err}"),
+            }
+        }
+    }
 
     #[test]
     fn test_run() {
