@@ -268,8 +268,7 @@ pub enum FilterToken {
     Format(String),
 
     // Control
-    #[regex(r"#.*\n", register_newline)]
-    #[regex(r"#.*\r", logos::skip)]
+    #[regex(r"#[^\n]*", logos::skip)]
     _Comment,
 
     #[token("\n", register_newline)]
