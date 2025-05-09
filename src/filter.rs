@@ -1,6 +1,6 @@
 use std::{collections::HashMap, str::FromStr};
 
-use run::{run_filter, RunCtx, RunResult};
+use run::{RunCtx, RunGen};
 
 use crate::{json::Json, lexer::LexSource, math::Number};
 
@@ -67,8 +67,8 @@ pub enum Filter {
     Loc(String, usize), // $__loc__
 }
 impl Filter {
-    pub fn run(&self, ctx: &mut RunCtx, json: &Json) -> RunResult {
-        run_filter(ctx, self, json)
+    pub fn run<'a>(&'a self, ctx: &'a RunCtx, json: &'a Json) -> RunGen<'a> {
+        RunGen::build(ctx, self, json)
     }
 
     pub fn string(s: String) -> Self {

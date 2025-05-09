@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::collections::HashMap;
 
 use rug::{float::Round, Integer};
 
@@ -11,142 +11,125 @@ use crate::{
     math::Number,
 };
 
-use super::{run, FuncDef, RunCtx, RunResult, RunValue};
+use super::{RunOut, yield_, FuncDef, RunCtx, RunEnd, RunGen, RunValue};
 
-pub type RsFuncDef = fn(&mut RunCtx, &[Filter], &Json) -> RunResult;
-
-pub type RsBuiltins = &'static HashMap<(&'static str, usize), RsFuncDef>;
 pub type JqBuiltins = HashMap<(&'static str, usize), FuncDef>;
 
-pub fn builtins() -> (RsBuiltins, JqBuiltins) {
-    let rs_builtins = &*RS_BUILTINS;
-
-    let jq_builtins = HashMap::new(); // TODO
-
-    (rs_builtins, jq_builtins)
+// TODO
+pub fn jq_builtins() -> JqBuiltins {
+    HashMap::new()
 }
 
-static RS_BUILTINS: LazyLock<HashMap<(&str, usize), RsFuncDef>> = LazyLock::new(|| {
-    HashMap::from_iter([
-        (("empty", 0), empty as RsFuncDef),
-        (("not", 0), not),
-        // (("path",           1),   func1     path)
-        // (("range",          2),   func2     range)
-        (("_plus", 2), plus),
-        (("_negate", 1), negate),
-        (("_minus", 2), minus),
-        (("_multiply", 2), multiply),
-        (("_divide", 2), divide),
-        (("_mod", 2), modulus),
-    ])
-});
+pub async fn run_rs_builtin(
+    name: &str,
+    argc: usize,
+    out: RunOut<'_>,
+    ctx: &RunCtx,
+    args: &[Filter],
+    json: &Json,
+) -> RunEnd {
+    macro_rules! dispatch {
+        ($( ($name:literal, $argc:literal) => $func:ident ),+ $(,)? ) => {{
+            match (name, argc) {
+                $( ($name, $argc) => $func(out, ctx, args, json).await, )+
+                _ => Some(str_error(format!("{name}/{argc} is not defined"))),
+            }
+        }};
+    }
+
+    dispatch!(
+        ("empty",       0) => empty,
+        ("not",         0) => not,
+    //  ("path",        1) => path,
+    //  ("range",       2) => range,
+        ("_plus",       2) => plus,
+        ("_negate",     1) => negate,
+        ("_minus",      2) => minus,
+        ("_multiply",   2) => multiply,
+        ("_divide",     2) => divide,
+        ("_mod",        2) => modulus,
+    )
+}
 
 // -------------- Utils -------------- //
 
-fn nullary(
-    _: &mut RunCtx,
-    args: &[Filter],
-    json: &Json,
-    f: fn(&Json) -> RunResult,
-) -> RunResult {
+fn nullary(args: &[Filter]) {
     assert!(args.is_empty(), "Nullary functions take no arguments");
-    f(json)
 }
 
-fn unary(
-    ctx: &mut RunCtx,
+async fn unary(
+    out: RunOut<'_>,
+    ctx: &RunCtx,
     args: &[Filter],
     json: &Json,
     f: fn(&Json, &Json) -> RunValue,
-) -> RunResult {
+) -> RunEnd {
     let a = match args {
         [a] => a,
         _ => panic!("Unary functions take one argument"),
     };
 
-    let mut ret = Vec::new();
-    for a in run(ctx, a, json) {
-        let a = match a {
-            Ok(a) => a,
-            stop => {
-                ret.push(stop);
-                return ret;
-            }
-        };
-
+    let mut a_gen = RunGen::build(ctx, a, json);
+    for a in &mut a_gen {
         match f(&a, json) {
-            Ok(val) => {
-                ret.push(Ok(val));
-            }
-            stop => {
-                ret.push(stop);
-                return ret;
-            }
+            Ok(val) => yield_!(out, val),
+            Err(end) => return Some(end),
         }
     }
+    if let Some(end) = a_gen.end() {
+        return Some(end);
+    }
 
-    ret
+    None
 }
 
-fn binary(
-    ctx: &mut RunCtx,
+async fn binary(
+    out: RunOut<'_>,
+    ctx: &RunCtx,
     args: &[Filter],
     json: &Json,
     f: fn(&Json, &Json, &Json) -> RunValue,
-) -> RunResult {
+) -> RunEnd {
     let (a, b) = match args {
         [a, b] => (a, b),
         _ => panic!("Binary functions takes two arguments"),
     };
 
-    let mut ret = Vec::new();
-    for a in run(ctx, a, json) {
-        let a = match a {
-            Ok(a) => a,
-            stop => {
-                ret.push(stop);
-                return ret;
-            }
-        };
-
-        for b in run(ctx, b, json) {
-            let b = match b {
-                Ok(b) => b,
-                stop => {
-                    ret.push(stop);
-                    return ret;
-                }
-            };
-
+    let mut a_gen = RunGen::build(ctx, a, json);
+    for a in &mut a_gen {
+        let mut b_gen = RunGen::build(ctx, b, json);
+        for b in &mut b_gen {
             match f(&a, &b, json) {
-                Ok(val) => {
-                    ret.push(Ok(val));
-                }
-                stop => {
-                    ret.push(stop);
-                    return ret;
-                }
+                Ok(val) => yield_!(out, val),
+                Err(end) => return Some(end),
             }
         }
+        if let Some(end) = b_gen.end() {
+            return Some(end);
+        }
+    }
+    if let Some(end) = a_gen.end() {
+        return Some(end);
     }
 
-    ret
+    None
 }
 
 // -------------- Builtins -------------- //
 
-fn empty(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    nullary(ctx, args, json, |_| vec![])
+async fn empty(_: RunOut<'_>, _: &RunCtx, args: &[Filter], _: &Json) -> RunEnd {
+    nullary(args);
+    None
 }
 
-fn not(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    nullary(ctx, args, json, |json| {
-        vec![Ok(Json::Bool(!json.to_bool()))]
-    })
+async fn not(out: RunOut<'_>, _: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    nullary(args);
+    yield_!(out, Json::Bool(!json.to_bool()));
+    None
 }
 
-fn plus(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    binary(ctx, args, json, |l, r, _| match (l, r) {
+async fn plus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l + r)),
         (Json::Array(l), Json::Array(r)) => Ok(Json::Array([l.as_slice(), r.as_slice()].concat())),
         (Json::String(l), Json::String(r)) => Ok(Json::String(String::new() + l + r)),
@@ -162,21 +145,21 @@ fn plus(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    })
+    }).await
 }
 
-fn negate(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    unary(ctx, args, json, |val, _| match val {
+async fn negate(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    unary(out, ctx, args, json, |val, _| match val {
         Json::Number(n) => Ok(Json::Number(-n)),
         any => Err(str_error(format!(
             "{} cannot be negated",
             json_fmt_error(any)
         ))),
-    })
+    }).await
 }
 
-fn minus(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    binary(ctx, args, json, |l, r, _| match (l, r) {
+async fn minus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l - r)),
         (Json::Array(l), Json::Array(r)) => Ok(Json::Array(
             l.iter().filter(|&x| !r.contains(x)).cloned().collect(),
@@ -186,11 +169,11 @@ fn minus(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    })
+    }).await
 }
 
-fn multiply(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    binary(ctx, args, json, |l, r, _| match (l, r) {
+async fn multiply(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l * r)),
         (Json::String(s), Json::Number(n)) => Ok(n
             .to_usize(Round::Down)
@@ -218,11 +201,11 @@ fn multiply(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    })
+    }).await
 }
 
-fn divide(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    binary(ctx, args, json, |l, r, _| match (l, r) {
+async fn divide(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (jl @ Json::Number(l), jr @ Json::Number(r)) => {
             if r.is_zero() {
                 Err(str_error(format!(
@@ -250,11 +233,11 @@ fn divide(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    })
+    }).await
 }
 
-fn modulus(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
-    binary(ctx, args, json, |l, r, _| match (l, r) {
+async fn modulus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (jl @ Json::Number(l), jr @ Json::Number(r)) => {
             if r.is_zero() {
                 Err(str_error(format!(
@@ -285,5 +268,5 @@ fn modulus(ctx: &mut RunCtx, args: &[Filter], json: &Json) -> RunResult {
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    })
+    }).await
 }

@@ -47,27 +47,23 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut ctx = filter::run::RunCtx::new();
+    let ctx = filter::run::RunCtx::new();
 
     let mut parser = JsonParser::new(&source);
     while let Some(json) = parser.next() {
         match json {
             Ok(json) => {
-                for result in filter.run(&mut ctx, &json) {
-                    match result {
-                        Ok(json) => {
-                            let json_fmt = json.format_pretty_color();
-                            print!("{json_fmt}");
-                        }
-                        Err(s) => {
-                            match s {
-                                filter::run::RunStopValue::Error(json) => println!("error: {json}"),
-                                filter::run::RunStopValue::Break(_) => todo!(),
-                                filter::run::RunStopValue::Halt(_) => todo!(),
-                            };
-                            return ExitCode::FAILURE;
-                        }
-                    }
+                let mut results = filter.run(&ctx, &json);
+                for result in &mut results {
+                    print!("{}", result.format_pretty_color());
+                }
+                if let Some(end) = results.end() {
+                    match end {
+                        filter::run::RunEndValue::Error(json) => println!("error: {json}"),
+                        filter::run::RunEndValue::Break(_) => todo!(),
+                        filter::run::RunEndValue::Halt(_) => todo!(),
+                    };
+                    return ExitCode::FAILURE;
                 }
             }
             Err(err) => {
