@@ -2,13 +2,9 @@ mod builtins;
 mod gen;
 
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    iter::zip,
-    rc::Rc,
+    cell::RefCell, collections::{HashMap, HashSet}, iter::zip, rc::Rc
 };
 
-use builtins::JqBuiltins;
 use either::Either;
 
 use crate::{json::Json, math::Number};
@@ -64,21 +60,70 @@ impl RunState {
 #[derive(Debug, Clone)]
 pub struct RunCtx {
     file: RunFile,
-    jq_builtins: JqBuiltins,
-    state: RunState,
+    builtins: HashMap<(String, usize), FuncDef>,
+    state: RefCell<RunState>,
 }
 impl RunCtx {
     pub fn new() -> Self {
-        let jq_builtins = builtins::jq_builtins();
         Self {
             file: RunFile::Main,
-            jq_builtins,
-            state: RunState::default(),
+            builtins: builtins::jq_builtins(),
+            state: RefCell::new(RunState::default()),
         }
     }
 
     fn is_top_level(&self) -> bool {
-        self.state.is_top_level()
+        self.state.borrow().is_top_level()
+    }
+
+    fn get_var(&self, name: &str) -> Option<Json> {
+        self.state.borrow().vars.get(name).cloned()
+    }
+
+    fn insert_var(&self, name: &str, val: Json) -> Option<Json> {
+        self.state.borrow_mut().vars.insert(name.to_string(), val)
+    }
+
+    fn remove_var(&self, name: &str) -> Option<Json> {
+        self.state.borrow_mut().vars.remove(name)
+    }
+
+    fn get_builtin(&self, name: &str, argc: usize) -> Option<&FuncDef> {
+        self.builtins.get(&(name.to_string(), argc))
+    }
+
+    fn get_func(&self, name: &str, argc: usize) -> Option<FuncDef> {
+        self.state.borrow().funcs.get(&(name.to_string(), argc)).cloned()
+    }
+
+    fn insert_func(&self, name: &str, argc: usize, func: FuncDef) -> Option<FuncDef> {
+        self.state
+            .borrow_mut()
+            .funcs
+            .insert((name.to_string(), argc), func)
+    }
+
+    fn remove_func(&self, name: &str, argc: usize) -> Option<FuncDef> {
+        self.state
+            .borrow_mut()
+            .funcs
+            .remove(&(name.to_string(), argc))
+    }
+
+    fn has_label(&self, label: &str) -> bool {
+        self.state.borrow().labels.contains(label)
+    }
+
+    fn insert_label(&self, label: &str) -> bool {
+        self.state.borrow_mut().labels.insert(label.to_string())
+    }
+
+    fn remove_label(&self, label: &str) -> bool {
+        self.state.borrow_mut().labels.remove(label)
+    }
+
+    fn get_current_func(&self) -> Option<(String, usize, CurrentFuncDef)> {
+        self.state.borrow().current_func.clone()
     }
 }
 impl Default for RunCtx {
@@ -129,8 +174,8 @@ async fn run(out: RunOut<'_>, ctx: &RunCtx, filter: &Filter, json: &Json) -> Run
 }
 
 async fn run_var(out: RunOut<'_>, ctx: &RunCtx, name: &str) -> RunEnd {
-    match ctx.state.vars.get(name) {
-        Some(val) => yield_!(out, val.clone()),
+    match ctx.get_var(name) {
+        Some(val) => yield_!(out, val),
         None => return Some(str_error(format!("${name} is not defined"))),
     }
     None
@@ -144,21 +189,31 @@ async fn run_var_def(
     next: &Filter,
     json: &Json,
 ) -> RunEnd {
+    fn restore_ctx(ctx: &RunCtx, og_var_name: &str, og_var: Option<Json>) {
+        if let Some(og_var) = og_var {
+            ctx.insert_var(og_var_name, og_var);
+        }
+    }
+
     let mut bodies = RunGen::build(ctx, body, json);
 
-    let new_ctx = &mut ctx.clone();
+    let og_var = ctx.remove_var(name);
 
     for body in &mut bodies {
-        new_ctx.state.vars.insert(name.to_string(), body);
+        ctx.insert_var(name, body);
 
-        let mut nexts = RunGen::build(new_ctx, next, json);
+        let mut nexts = RunGen::build(ctx, next, json);
         for next in &mut nexts {
             yield_!(out, next);
         }
         if let Some(end) = nexts.end() {
+            restore_ctx(ctx, name, og_var);
             return Some(end);
         }
     }
+
+    restore_ctx(ctx, name, og_var);
+
     if let Some(end) = bodies.end() {
         return Some(end);
     }
@@ -627,6 +682,12 @@ async fn run_reduce(
     update: &Filter,
     json: &Json,
 ) -> RunEnd {
+    fn restore_ctx(ctx: &RunCtx, og_var_name: &str, og_var: Option<Json>) {
+        if let Some(var) = og_var {
+            ctx.insert_var(og_var_name, var);
+        }
+    }
+
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
 
@@ -634,27 +695,31 @@ async fn run_reduce(
     for base in &mut bases {
         let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
 
-        let new_ctx = &mut ctx.clone();
+        let og_var = ctx.remove_var(name);
 
         let mut acc = base;
         for val in &mut stream {
-            new_ctx.state.vars.insert(name.to_string(), val.clone());
+            ctx.insert_var(name, val.clone());
 
             acc = {
-                let mut updates = RunGen::build(new_ctx, update, &acc);
+                let mut updates = RunGen::build(ctx, update, &acc);
                 let new_acc = updates.by_ref().fold(Json::Null, |_, j| j);
                 if let Some(end) = updates.end() {
+                    restore_ctx(ctx, name, og_var);
                     return Some(end);
                 }
                 new_acc
             }
         }
         if let Some(end) = stream.end() {
+            restore_ctx(ctx, name, og_var);
             return Some(end);
         }
 
         // We only yield the accumulator's last value
         yield_!(out, acc);
+
+        restore_ctx(ctx, name, og_var);
     }
     if let Some(end) = bases.end() {
         return Some(end);
@@ -674,6 +739,12 @@ async fn run_foreach(
     extract: &Filter,
     json: &Json,
 ) -> RunEnd {
+    fn restore_ctx(ctx: &RunCtx, og_var_name: &str, og_var: Option<Json>) {
+        if let Some(var) = og_var {
+            ctx.insert_var(og_var_name, var);
+        }
+    }
+
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
 
@@ -681,35 +752,40 @@ async fn run_foreach(
     for base in &mut bases {
         let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
 
-        let new_ctx = &mut ctx.clone();
+        let og_var = ctx.remove_var(name);
 
         let mut acc = base;
         for val in &mut stream {
-            new_ctx.state.vars.insert(name.to_string(), val.clone());
+            ctx.insert_var(name, val.clone());
 
             acc = {
-                let mut updates = RunGen::build(new_ctx, update, &acc);
+                let mut updates = RunGen::build(ctx, update, &acc);
 
                 let mut new_acc = Json::Null;
 
                 for update in &mut updates {
                     new_acc = update;
 
-                    let mut extracts = RunGen::build(new_ctx, extract, &new_acc);
+                    let mut extracts = RunGen::build(ctx, extract, &new_acc);
                     for extract in &mut extracts {
                         yield_!(out, extract);
                     }
                     if let Some(end) = extracts.end() {
+                        restore_ctx(ctx, name, og_var);
                         return Some(end);
                     }
                 }
                 if let Some(end) = updates.end() {
+                    restore_ctx(ctx, name, og_var);
                     return Some(end);
                 }
 
                 new_acc
             }
         }
+
+        restore_ctx(ctx, name, og_var);
+
         if let Some(end) = stream.end() {
             return Some(end);
         }
@@ -749,11 +825,10 @@ async fn run_func_def(
         }
     }
 
-    let new_ctx = &mut ctx.clone();
-    // let prev_func = ctx.state.funcs.remove(&(name.to_string(), params.len()));
+    let prev_func = ctx.remove_func(name, params.len());
 
     {
-        let func_state = Rc::new(RefCell::new(new_ctx.state.clone()));
+        let func_state = Rc::new(ctx.state.clone());
         func_state.borrow_mut().current_func = Some((
             name.to_string(),
             params.len(),
@@ -764,8 +839,9 @@ async fn run_func_def(
             },
         ));
 
-        new_ctx.state.funcs.insert(
-            (name.to_string(), params.len()),
+        ctx.insert_func(
+            name,
+            params.len(),
             FuncDef {
                 state: func_state.borrow().clone(),
                 params: param_names,
@@ -773,26 +849,24 @@ async fn run_func_def(
             },
         );
 
-        // drop func_ctx
+        // drop func_state
     }
 
-    let mut nexts = RunGen::build(new_ctx, next, json);
+    let mut nexts = RunGen::build(ctx, next, json);
     for next in &mut nexts {
         yield_!(out, next);
     }
     let ret = nexts.end();
 
     // Restore scope only on the top level of modules
-    // let restore_scope = ctx.file == RunFile::Main || ctx.is_top_level();
-    // if restore_scope {
-    //     if let Some(prev_func) = prev_func {
-    //         ctx.state
-    //             .funcs
-    //             .insert((name.to_string(), params.len()), prev_func);
-    //     } else {
-    //         ctx.state.funcs.remove(&(name.to_string(), params.len()));
-    //     }
-    // }
+    let restore_scope = ctx.file == RunFile::Main || !ctx.is_top_level();
+    if restore_scope {
+        if let Some(prev_func) = prev_func {
+            ctx.insert_func(name, params.len(), prev_func);
+        } else {
+            ctx.remove_func(name, params.len());
+        }
+    }
 
     ret
 }
@@ -806,7 +880,7 @@ async fn run_func_call(
 ) -> RunEnd {
     async fn func_call(
         out: RunOut<'_>,
-        ctx: &mut RunCtx,
+        ctx: &RunCtx,
         mut func: FuncDef,
         args: &[Filter],
         json: &Json,
@@ -815,14 +889,14 @@ async fn run_func_call(
             func.state.funcs.insert(
                 (param, 0),
                 FuncDef {
-                    state: ctx.state.clone(),
+                    state: ctx.state.borrow().clone(),
                     params: vec![],
                     body: arg.clone(),
                 },
             );
         }
 
-        std::mem::swap(&mut ctx.state, &mut func.state);
+        std::mem::swap(&mut *ctx.state.borrow_mut(), &mut func.state);
 
         let ret = {
             let mut results = RunGen::build(ctx, &func.body, json);
@@ -832,36 +906,38 @@ async fn run_func_call(
             results.end()
         };
 
-        std::mem::swap(&mut ctx.state, &mut func.state);
+        std::mem::swap(&mut *ctx.state.borrow_mut(), &mut func.state);
 
         ret
     }
 
     let argc = args.len();
 
-    let new_ctx = &mut ctx.clone();
-
-    if let Some((curr_name, curr_argc, curr_func)) = &new_ctx.state.current_func {
-        if curr_name == name && *curr_argc == argc {
+    // Try recursive call
+    if let Some((curr_name, curr_argc, curr_func)) = ctx.get_current_func() {
+        if curr_name == name && curr_argc == argc {
             let func_def = FuncDef {
                 state: curr_func.state.borrow().clone(),
-                params: curr_func.params.clone(),
-                body: curr_func.body.clone(),
+                params: curr_func.params,
+                body: curr_func.body,
             };
-            return func_call(out, new_ctx, func_def, args, json).await;
+            return func_call(out, ctx, func_def, args, json).await;
         }
     }
 
-    if let Some(func) = new_ctx.state.funcs.get(&(name.to_string(), argc)) {
-        return func_call(out, new_ctx, func.clone(), args, json).await;
+    // Try user function call
+    if let Some(func) = ctx.get_func(name, argc) {
+        let func = func.clone();
+        return func_call(out, ctx, func, args, json).await;
     }
 
-    if let Some(func) = new_ctx.jq_builtins.get(&(name, argc)) {
-        return func_call(out, new_ctx, func.clone(), args, json).await;
+    // Try jq builtin call
+    if let Some(func) = ctx.get_builtin(name, argc) {
+        return func_call(out, ctx, func.clone(), args, json).await;
     }
 
-    // Only option left is to be an rs builtin
-    builtins::run_rs_builtin(name, argc, out, new_ctx, args, json).await
+    // Only option left is rs builtin call
+    builtins::run_rs_builtin(name, argc, out, ctx, args, json).await
 }
 
 async fn run_label(
@@ -871,19 +947,16 @@ async fn run_label(
     then: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let new_ctx = &mut ctx.clone();
-
-    // let inserted = new_ctx.state.labels.insert(label.to_string());
-    new_ctx.state.labels.insert(label.to_string());
+    let inserted = ctx.insert_label(label);
 
     let mut results = RunGen::build(ctx, then, json);
     for result in &mut results {
         yield_!(out, result);
     }
 
-    // if inserted {
-    //     ctx.state.labels.remove(label);
-    // }
+    if inserted {
+        ctx.remove_label(label);
+    }
 
     if let Some(RunEndValue::Break(break_label)) = results.end() {
         if break_label != label {
@@ -895,7 +968,7 @@ async fn run_label(
 }
 
 async fn run_break(ctx: &RunCtx, label: &str) -> RunEnd {
-    if ctx.state.labels.contains(label) {
+    if ctx.has_label(label) {
         Some(RunEndValue::Break(label.to_string()))
     } else {
         Some(str_error(format!("$*label-{label} is not defined")))
@@ -956,7 +1029,7 @@ mod test {
             [1,2,3,4]
         "#;
         let filter = r#"
-            foreach (.[],.[]) as $item (0; . + $item)
+            map(. + 1)
         "#;
 
         let input: Json = input.parse().expect("json input parse error");
