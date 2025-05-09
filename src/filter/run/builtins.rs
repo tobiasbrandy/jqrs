@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
 use rug::{float::Round, Integer};
 
@@ -11,13 +11,22 @@ use crate::{
     math::Number,
 };
 
-use super::{RunOut, yield_, FuncDef, RunCtx, RunEnd, RunGen, RunValue};
+use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunState, RunValue};
 
-pub type JqBuiltins = HashMap<(&'static str, usize), FuncDef>;
+pub fn jq_builtins() -> HashMap<(String, usize), FuncDef> {
+    let ctx = RunCtx {
+        file: RunFile::Module("builtins.jq".to_string()),
+        builtins: HashMap::new(),
+        state: RefCell::new(RunState::default()),
+    };
 
-// TODO
-pub fn jq_builtins() -> JqBuiltins {
-    HashMap::new()
+    include_str!("builtins.jq")
+        .parse::<Filter>()
+        .expect("Error parsing jq builtins")
+        .run(&ctx, &Json::Null)
+        .last();
+
+    ctx.state.into_inner().funcs
 }
 
 pub async fn run_rs_builtin(
@@ -145,7 +154,8 @@ async fn plus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> Ru
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    }).await
+    })
+    .await
 }
 
 async fn negate(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
@@ -155,7 +165,8 @@ async fn negate(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> 
             "{} cannot be negated",
             json_fmt_error(any)
         ))),
-    }).await
+    })
+    .await
 }
 
 async fn minus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
@@ -169,7 +180,8 @@ async fn minus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> R
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    }).await
+    })
+    .await
 }
 
 async fn multiply(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
@@ -201,7 +213,8 @@ async fn multiply(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    }).await
+    })
+    .await
 }
 
 async fn divide(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
@@ -233,7 +246,8 @@ async fn divide(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> 
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    }).await
+    })
+    .await
 }
 
 async fn modulus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
@@ -268,5 +282,6 @@ async fn modulus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) ->
             json_fmt_error(l),
             json_fmt_error(r)
         ))),
-    }).await
+    })
+    .await
 }
