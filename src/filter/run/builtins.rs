@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, sync::LazyLock};
 
 use rug::{float::Round, Integer};
 
@@ -13,10 +13,10 @@ use crate::{
 
 use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunState, RunValue};
 
-pub fn jq_builtins() -> HashMap<(String, usize), FuncDef> {
+pub static JQ_BUILTINS: LazyLock<HashMap<(String, usize), FuncDef>> = LazyLock::new(|| {
     let ctx = RunCtx {
         file: RunFile::Module("builtins.jq".to_string()),
-        builtins: HashMap::new(),
+        custom_builtins: Some(HashMap::new()),
         state: RefCell::new(RunState::default()),
     };
 
@@ -27,7 +27,7 @@ pub fn jq_builtins() -> HashMap<(String, usize), FuncDef> {
         .last();
 
     ctx.state.into_inner().funcs
-}
+});
 
 pub async fn run_rs_builtin(
     name: &str,

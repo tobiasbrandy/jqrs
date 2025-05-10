@@ -2,7 +2,7 @@ mod builtins;
 mod gen;
 
 use std::{
-    cell::RefCell, collections::{HashMap, HashSet}, iter::zip, rc::Rc
+    cell::RefCell, collections::{HashMap, HashSet}, iter::zip, sync::{Arc, Mutex}
 };
 
 use either::Either;
@@ -39,7 +39,7 @@ struct FuncDef {
 
 #[derive(Debug, Clone)]
 struct CurrentFuncDef {
-    state: Rc<RefCell<RunState>>,
+    state: Arc<Mutex<RunState>>,
     params: Vec<String>,
     body: Filter,
 }
@@ -51,29 +51,27 @@ struct RunState {
     labels: HashSet<String>,
     current_func: Option<(String, usize, CurrentFuncDef)>,
 }
-impl RunState {
-    fn is_top_level(&self) -> bool {
-        self.current_func.is_none()
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct RunCtx {
+    /// The jq file we are currently running
     file: RunFile,
-    builtins: HashMap<(String, usize), FuncDef>,
+    /// Custom user defined builtins to use instead of the default builtins
+    custom_builtins: Option<HashMap<(String, usize), FuncDef>>,
+    /// Run inner state
     state: RefCell<RunState>,
 }
 impl RunCtx {
     pub fn new() -> Self {
         Self {
             file: RunFile::Main,
-            builtins: builtins::jq_builtins(),
+            custom_builtins: None,
             state: RefCell::new(RunState::default()),
         }
     }
 
     fn is_top_level(&self) -> bool {
-        self.state.borrow().is_top_level()
+        self.state.borrow().current_func.is_none()
     }
 
     fn get_var(&self, name: &str) -> Option<Json> {
@@ -89,7 +87,12 @@ impl RunCtx {
     }
 
     fn get_builtin(&self, name: &str, argc: usize) -> Option<&FuncDef> {
-        self.builtins.get(&(name.to_string(), argc))
+        let builtins = match &self.custom_builtins {
+            Some(builtins) => builtins,
+            None => &builtins::JQ_BUILTINS,
+        };
+
+        builtins.get(&(name.to_string(), argc))
     }
 
     fn get_func(&self, name: &str, argc: usize) -> Option<FuncDef> {
@@ -828,8 +831,8 @@ async fn run_func_def(
     let prev_func = ctx.remove_func(name, params.len());
 
     {
-        let func_state = Rc::new(ctx.state.clone());
-        func_state.borrow_mut().current_func = Some((
+        let func_state = Arc::new(Mutex::new(ctx.state.borrow().clone()));
+        func_state.lock().unwrap().current_func = Some((
             name.to_string(),
             params.len(),
             CurrentFuncDef {
@@ -843,13 +846,13 @@ async fn run_func_def(
             name,
             params.len(),
             FuncDef {
-                state: func_state.borrow().clone(),
+                state: func_state.lock().unwrap().clone(),
                 params: param_names,
                 body,
             },
         );
 
-        // drop func_state
+        // drop func_state -> Arc only owned by ctx.state.current_func
     }
 
     let mut nexts = RunGen::build(ctx, next, json);
@@ -917,7 +920,7 @@ async fn run_func_call(
     if let Some((curr_name, curr_argc, curr_func)) = ctx.get_current_func() {
         if curr_name == name && curr_argc == argc {
             let func_def = FuncDef {
-                state: curr_func.state.borrow().clone(),
+                state: curr_func.state.lock().unwrap().clone(),
                 params: curr_func.params,
                 body: curr_func.body,
             };
@@ -1029,7 +1032,10 @@ mod test {
             [1,2,3,4]
         "#;
         let filter = r#"
-            map(. + 1)
+            def square: . * .;
+            def is_even: [true, false][. % 2];
+            def square_evens: [.[] | select(is_even)] | map(. * .);
+            square_evens
         "#;
 
         let input: Json = input.parse().expect("json input parse error");
@@ -1041,7 +1047,7 @@ mod test {
         let ctx = RunCtx::new();
         let mut run_gen = filter.run(&ctx, &input);
         for json in &mut run_gen {
-            println!("{json}");
+            println!("{json:?}");
         }
         if let Some(end) = run_gen.end() {
             match end {
