@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use run::{RunCtx, RunGen};
 
@@ -12,8 +12,8 @@ type FilterRef = Box<Filter>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FuncParam {
-    VarParam(String),
-    FilterParam(String),
+    VarParam(Arc<str>),
+    FilterParam(Arc<str>),
 }
 impl std::fmt::Display for FuncParam {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -32,8 +32,8 @@ pub enum Filter {
     Json(Json), // <json>
 
     // Variable
-    Var(String),                          // $<name>
-    VarDef(String, FilterRef, FilterRef), // <name> as <body> | <next>
+    Var(Arc<str>),                          // $<name>
+    VarDef(Arc<str>, FilterRef, FilterRef), // <name> as <body> | <next>
 
     // Literals
     ArrayLit(FilterRef),              // [<array>]
@@ -52,19 +52,19 @@ pub enum Filter {
     IfElse(FilterRef, FilterRef, FilterRef), // if <cond> then <then> else <else>
 
     // Reductions
-    Reduce(FilterRef, String, FilterRef, FilterRef), // reduce <exp> as $<name> (<init>; <update>)
-    Foreach(FilterRef, String, FilterRef, FilterRef, FilterRef), // foreach <exp> as $<name> (<init>; <update>; <extract>)
+    Reduce(FilterRef, Arc<str>, FilterRef, FilterRef), // reduce <exp> as $<name> (<init>; <update>)
+    Foreach(FilterRef, Arc<str>, FilterRef, FilterRef, FilterRef), // foreach <exp> as $<name> (<init>; <update>; <extract>)
 
     // Functions
-    FuncDef(String, Vec<FuncParam>, FilterRef, FilterRef), // def <name>(<params>): <body>; <next>
-    FuncCall(String, Vec<Filter>),                         // <name>(<args>)
+    FuncDef(Arc<str>, Vec<FuncParam>, FilterRef, FilterRef), // def <name>(<params>): <body>; <next>
+    FuncCall(Arc<str>, Vec<Filter>),                         // <name>(<args>)
 
     // Label & Break
-    Label(String, FilterRef), // label $<name> | <next>
-    Break(String),            // break $<name>
+    Label(Arc<str>, FilterRef), // label $<name> | <next>
+    Break(Arc<str>),            // break $<name>
 
     // Special
-    Loc(String, usize), // $__loc__
+    Loc(Arc<str>, usize), // $__loc__
 }
 impl Filter {
     pub fn run<'a>(&'a self, ctx: &'a RunCtx, json: &'a Json) -> RunGen<'a> {

@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{ops::Deref, str::FromStr, sync::Arc};
 
 use logos::Logos;
 use rug::float::ParseFloatError;
@@ -258,14 +258,14 @@ pub enum FilterToken {
     Quote,
 
     // Identifiers
-    #[regex(r#"([a-zA-Z_][a-zA-Z_0-9]*::)*[a-zA-Z_][a-zA-Z_0-9]*"#, |lex| lex.slice().to_string())]
-    Id(String),
+    #[regex(r#"([a-zA-Z_][a-zA-Z_0-9]*::)*[a-zA-Z_][a-zA-Z_0-9]*"#, |lex| Arc::from(lex.slice().deref()))]
+    Id(Arc<str>),
 
-    #[regex(r#"\.[a-zA-Z_][a-zA-Z_0-9]*"#, |lex| lex.slice()[1..].to_string())]
-    Field(String),
+    #[regex(r#"\.[a-zA-Z_][a-zA-Z_0-9]*"#, |lex| Arc::from(&lex.slice()[1..]))]
+    Field(Arc<str>),
 
-    #[regex(r#"@[a-zA-Z0-9_]+"#, |lex| lex.slice()[1..].to_string())]
-    Format(String),
+    #[regex(r#"@[a-zA-Z0-9_]+"#, |lex| Arc::from(&lex.slice()[1..]))]
+    Format(Arc<str>),
 
     // Control
     #[regex(r"#[^\n]*", logos::skip)]

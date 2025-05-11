@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, sync::LazyLock};
+use std::{cell::RefCell, collections::HashMap, sync::{Arc, LazyLock}};
 
 use rug::{float::Round, Integer};
 
@@ -13,7 +13,7 @@ use crate::{
 
 use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunState, RunValue};
 
-pub static JQ_BUILTINS: LazyLock<HashMap<(String, usize), FuncDef>> = LazyLock::new(|| {
+pub static JQ_BUILTINS: LazyLock<HashMap<(Arc<str>, usize), FuncDef>> = LazyLock::new(|| {
     let ctx = RunCtx {
         file: RunFile::Module("builtins.jq".to_string()),
         custom_builtins: Some(HashMap::new()),

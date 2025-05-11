@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+use std::sync::Arc;
+
 use crate::{
     filter::lexer::Op,
     lexer::LexSource,
@@ -217,7 +219,7 @@ fn FuncDefs(parser: &mut FParser) -> FResult<Filter> {
 /// FuncDef
 ///   : def id ':' Exp ';'
 ///   | def id '(' Params ')' ':' Exp ';'
-fn FuncDef(parser: &mut FParser) -> FResult<(String, Vec<FuncParam>, Filter)> {
+fn FuncDef(parser: &mut FParser) -> FResult<(Arc<str>, Vec<FuncParam>, Filter)> {
     parser.expect_token(FT::Def)?;
 
     let name = match parser.pop_token()? {
@@ -276,7 +278,7 @@ fn Param(parser: &mut FParser) -> FResult<FuncParam> {
     }
 
     if is_keyword(&tok) {
-        return Ok(FuncParam::VarParam(tok.to_string()));
+        return Ok(FuncParam::VarParam(tok.to_string().into()));
     }
 
     Err(FilterParserError::UnexpectedToken(tok))
@@ -402,7 +404,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 Filter::Label(name, Box::new(next))
             }
             FT::Op(Op::Minus) => Filter::FuncCall(
-                "_negate".to_string(),
+                "_negate".into(),
                 vec![ExpOp(
                     parser,
                     op_prefix_precedence(&Op::Minus),
@@ -457,16 +459,16 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
             // Helper function to more easily define operator behaviour
             fn op_call(name: &str, left: Filter, right: Filter) -> Filter {
-                Filter::FuncCall(name.to_string(), vec![left, right])
+                Filter::FuncCall(name.into(), vec![left, right])
             }
             fn assign_op(name: &str, left: Filter, right: Filter) -> Filter {
                 Filter::VarDef(
-                    "_tmp".to_string(),
+                    "_tmp".into(),
                     Box::new(right),
                     Box::new(op_call(
                         "_modify",
                         left,
-                        op_call(name, Filter::Identity, Filter::Var("_tmp".to_string())),
+                        op_call(name, Filter::Identity, Filter::Var("_tmp".into())),
                     )),
                 )
             }
@@ -474,7 +476,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
             // Shift
             left = match op {
                 Op::Opt => Filter::TryCatch(Box::new(left), Box::new(Filter::Empty)),
-                Op::Assign => Filter::FuncCall("_assign".to_string(), vec![left, right]),
+                Op::Assign => Filter::FuncCall("_assign".into(), vec![left, right]),
                 Op::Or => Filter::IfElse(
                     Box::new(left),
                     Box::new(Filter::bool(true)),
@@ -495,14 +497,14 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 ),
                 Op::Alt => Filter::Alt(Box::new(left), Box::new(right)),
                 Op::AltA => Filter::VarDef(
-                    "_tmp".to_string(),
+                    "_tmp".into(),
                     Box::new(right),
                     Box::new(op_call(
                         "_modify",
                         left,
                         Filter::Alt(
                             Box::new(Filter::Identity),
-                            Box::new(Filter::Var("_tmp".to_string())),
+                            Box::new(Filter::Var("_tmp".into())),
                         ),
                     )),
                 ),
@@ -537,7 +539,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
 /// Pattern
 ///   : '$' id
-fn Pattern(parser: &mut FParser) -> FResult<String> {
+fn Pattern(parser: &mut FParser) -> FResult<Arc<str>> {
     parser.expect_token(FT::Var)?;
 
     match parser.pop_token()? {
@@ -631,7 +633,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
                 Filter::Identity
             }
         }
-        FT::Recr => Filter::FuncCall("recurse".to_string(), vec![]),
+        FT::Recr => Filter::FuncCall("recurse".into(), vec![]),
         FT::Quote => parser.push_and_then(FT::Quote, String)?,
         FT::Num(n) => parser.push_and_then(FT::Num(n), Number)?,
         FT::True => Filter::bool(true),
@@ -650,7 +652,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             if let FT::Quote = parser.peek_token()? {
                 parser.push_and_then(FT::Format(format), String)?
             } else {
-                Filter::FuncCall("format".to_string(), vec![Filter::string(format)])
+                Filter::FuncCall("format".into(), vec![Filter::string(format.to_string())])
             }
         }
         FT::LPar => {
@@ -673,9 +675,9 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             Filter::ObjectLit(dict)
         }
         FT::Var => match parser.pop_token()? {
-            FT::Loc => Filter::Loc("<top-level>".to_string(), parser.pos().line),
+            FT::Loc => Filter::Loc("<top-level>".into(), parser.pos().line),
             FT::Id(id) => Filter::Var(id),
-            tok if is_keyword(&tok) => Filter::Var(tok.to_string()),
+            tok if is_keyword(&tok) => Filter::Var(tok.to_string().into()),
             tok => return Err(FilterParserError::UnexpectedToken(tok)),
         },
         FT::Id(id) => {
@@ -690,7 +692,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
         }
         FT::Field(field) => {
             let filter =
-                Filter::Project(Box::new(Filter::Identity), Box::new(Filter::string(field)));
+                Filter::Project(Box::new(Filter::Identity), Box::new(Filter::string(field.to_string())));
             try_opt(parser, filter)?
         }
         tok => return Err(FilterParserError::UnexpectedToken(tok)),
@@ -698,7 +700,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
 
     loop {
         term = match parser.pop_token()? {
-            FT::Field(field) => Filter::Project(Box::new(term), Box::new(Filter::string(field))),
+            FT::Field(field) => Filter::Project(Box::new(term), Box::new(Filter::string(field.to_string()))),
             FT::Dot => Filter::Project(Box::new(term), Box::new(String(parser)?)),
             FT::LBrack => {
                 fn parse_slice(parser: &mut FParser, term: Filter) -> FResult<Filter> {
@@ -810,17 +812,17 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
     if let FT::Var = tok {
         let key = match parser.pop_token()? {
             FT::Id(id) => id,
-            tok if is_keyword(&tok) => tok.to_string(),
+            tok if is_keyword(&tok) => tok.to_string().into(),
             tok => return Err(FilterParserError::UnexpectedToken(tok)),
         };
 
-        return Ok((Filter::string(key.clone()), Filter::Var(key)))
+        return Ok((Filter::string(key.to_string()), Filter::Var(key)))
     }
 
     let mut is_exp = false;
 
     let key = match tok {
-        FT::Id(id) => Filter::string(id),
+        FT::Id(id) => Filter::string(id.to_string()),
         tok if is_keyword(&tok) => Filter::string(tok.to_string()),
         FT::Quote | FT::Format(_) => parser.push_and_then(tok, String)?,
         FT::LPar => {
@@ -864,7 +866,7 @@ fn ExpD(parser: &mut FParser) -> FResult<Filter> {
 
         while minus_count > 0 {
             minus_count -= 1;
-            expd = Filter::FuncCall("_negate".to_string(), vec![expd]);
+            expd = Filter::FuncCall("_negate".into(), vec![expd]);
         }
 
         Ok(expd)
@@ -891,7 +893,7 @@ fn String(parser: &mut FParser) -> FResult<Filter> {
         FT::Format(format) => format,
         tok => {
             parser.push_token(tok);
-            "text".to_string()
+            "text".into()
         }
     };
 
@@ -902,8 +904,8 @@ fn String(parser: &mut FParser) -> FResult<Filter> {
     parser.expect_token(FT::Quote)?;
 
     Ok(Filter::VarDef(
-        "_fmt".to_string(),
-        Box::new(Filter::string(format)),
+        "_fmt".into(),
+        Box::new(Filter::string(format.to_string())),
         Box::new(string),
     ))
 }
@@ -958,17 +960,17 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
 
         // Concat: previous filter + interpolated expression + string after interpolation
         filter = Filter::FuncCall(
-            "_plus".to_string(),
+            "_plus".into(),
             vec![
                 filter,
                 Filter::FuncCall(
-                    "_plus".to_string(),
+                    "_plus".into(),
                     vec![
                         Filter::Pipe(
                             Box::new(exp),
                             Box::new(Filter::FuncCall(
-                                "format".to_string(),
-                                vec![Filter::Var("_fmt".to_string())],
+                                "format".into(),
+                                vec![Filter::Var("_fmt".into())],
                             )),
                         ),
                         string,

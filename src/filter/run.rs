@@ -17,8 +17,8 @@ use gen::{yield_, RunOut};
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEndValue {
     Error(Json),
-    Break(String),
-    Halt(String),
+    Break(Arc<str>),
+    Halt(Arc<str>),
 }
 pub type RunEnd = Option<RunEndValue>;
 
@@ -33,23 +33,23 @@ enum RunFile {
 #[derive(Debug, Clone)]
 struct FuncDef {
     state: RunState,
-    params: Vec<String>,
+    params: Vec<Arc<str>>,
     body: Filter,
 }
 
 #[derive(Debug, Clone)]
 struct CurrentFuncDef {
     state: Arc<Mutex<RunState>>,
-    params: Vec<String>,
+    params: Vec<Arc<str>>,
     body: Filter,
 }
 
 #[derive(Debug, Clone, Default)]
 struct RunState {
-    vars: HashMap<String, Json>,
-    funcs: HashMap<(String, usize), FuncDef>,
-    labels: HashSet<String>,
-    current_func: Option<(String, usize, CurrentFuncDef)>,
+    vars: HashMap<Arc<str>, Json>,
+    funcs: HashMap<(Arc<str>, usize), FuncDef>,
+    labels: HashSet<Arc<str>>,
+    current_func: Option<(Arc<str>, usize, CurrentFuncDef)>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +57,7 @@ pub struct RunCtx {
     /// The jq file we are currently running
     file: RunFile,
     /// Custom user defined builtins to use instead of the default builtins
-    custom_builtins: Option<HashMap<(String, usize), FuncDef>>,
+    custom_builtins: Option<HashMap<(Arc<str>, usize), FuncDef>>,
     /// Run inner state
     state: RefCell<RunState>,
 }
@@ -78,54 +78,54 @@ impl RunCtx {
         self.state.borrow().vars.get(name).cloned()
     }
 
-    fn insert_var(&self, name: &str, val: Json) -> Option<Json> {
-        self.state.borrow_mut().vars.insert(name.to_string(), val)
+    fn insert_var(&self, name: &Arc<str>, val: Json) -> Option<Json> {
+        self.state.borrow_mut().vars.insert(name.clone(), val)
     }
 
     fn remove_var(&self, name: &str) -> Option<Json> {
         self.state.borrow_mut().vars.remove(name)
     }
 
-    fn get_builtin(&self, name: &str, argc: usize) -> Option<&FuncDef> {
+    fn get_builtin(&self, name: &Arc<str>, argc: usize) -> Option<&FuncDef> {
         let builtins = match &self.custom_builtins {
             Some(builtins) => builtins,
             None => &builtins::JQ_BUILTINS,
         };
 
-        builtins.get(&(name.to_string(), argc))
+        builtins.get(&(name.clone(), argc))
     }
 
-    fn get_func(&self, name: &str, argc: usize) -> Option<FuncDef> {
-        self.state.borrow().funcs.get(&(name.to_string(), argc)).cloned()
+    fn get_func(&self, name: &Arc<str>, argc: usize) -> Option<FuncDef> {
+        self.state.borrow().funcs.get(&(name.clone(), argc)).cloned()
     }
 
-    fn insert_func(&self, name: &str, argc: usize, func: FuncDef) -> Option<FuncDef> {
+    fn insert_func(&self, name: &Arc<str>, argc: usize, func: FuncDef) -> Option<FuncDef> {
         self.state
             .borrow_mut()
             .funcs
-            .insert((name.to_string(), argc), func)
+            .insert((name.clone(), argc), func)
     }
 
-    fn remove_func(&self, name: &str, argc: usize) -> Option<FuncDef> {
+    fn remove_func(&self, name: &Arc<str>, argc: usize) -> Option<FuncDef> {
         self.state
             .borrow_mut()
             .funcs
-            .remove(&(name.to_string(), argc))
+            .remove(&(name.clone(), argc))
     }
 
     fn has_label(&self, label: &str) -> bool {
         self.state.borrow().labels.contains(label)
     }
 
-    fn insert_label(&self, label: &str) -> bool {
-        self.state.borrow_mut().labels.insert(label.to_string())
+    fn insert_label(&self, label: &Arc<str>) -> bool {
+        self.state.borrow_mut().labels.insert(label.clone())
     }
 
     fn remove_label(&self, label: &str) -> bool {
         self.state.borrow_mut().labels.remove(label)
     }
 
-    fn get_current_func(&self) -> Option<(String, usize, CurrentFuncDef)> {
+    fn get_current_func(&self) -> Option<(Arc<str>, usize, CurrentFuncDef)> {
         self.state.borrow().current_func.clone()
     }
 }
@@ -187,12 +187,12 @@ async fn run_var(out: RunOut<'_>, ctx: &RunCtx, name: &str) -> RunEnd {
 async fn run_var_def(
     out: RunOut<'_>,
     ctx: &RunCtx,
-    name: &str,
+    name: &Arc<str>,
     body: &Filter,
     next: &Filter,
     json: &Json,
 ) -> RunEnd {
-    fn restore_ctx(ctx: &RunCtx, og_var_name: &str, og_var: Option<Json>) {
+    fn restore_ctx(ctx: &RunCtx, og_var_name: &Arc<str>, og_var: Option<Json>) {
         if let Some(og_var) = og_var {
             ctx.insert_var(og_var_name, og_var);
         }
@@ -454,7 +454,7 @@ async fn run_slice(
                     None => return Ok(Json::Null),
                 };
 
-                Ok(Json::String(s[l..r].to_string()))
+                Ok(Json::String(s[l..r].into()))
             }
             (Json::Null, Json::Number(_), Json::Number(_)) => Ok(Json::Null),
             (Json::Array(_), anyl, anyr) | (Json::Null, anyl, anyr) => Err(str_error(format!(
@@ -680,12 +680,12 @@ async fn run_reduce(
     out: RunOut<'_>,
     ctx: &RunCtx,
     exp: &Filter,
-    name: &str,
+    name: &Arc<str>,
     init: &Filter,
     update: &Filter,
     json: &Json,
 ) -> RunEnd {
-    fn restore_ctx(ctx: &RunCtx, og_var_name: &str, og_var: Option<Json>) {
+    fn restore_ctx(ctx: &RunCtx, og_var_name: &Arc<str>, og_var: Option<Json>) {
         if let Some(var) = og_var {
             ctx.insert_var(og_var_name, var);
         }
@@ -736,13 +736,13 @@ async fn run_foreach(
     out: RunOut<'_>,
     ctx: &RunCtx,
     exp: &Filter,
-    name: &str,
+    name: &Arc<str>,
     init: &Filter,
     update: &Filter,
     extract: &Filter,
     json: &Json,
 ) -> RunEnd {
-    fn restore_ctx(ctx: &RunCtx, og_var_name: &str, og_var: Option<Json>) {
+    fn restore_ctx(ctx: &RunCtx, og_var_name: &Arc<str>, og_var: Option<Json>) {
         if let Some(var) = og_var {
             ctx.insert_var(og_var_name, var);
         }
@@ -803,7 +803,7 @@ async fn run_foreach(
 async fn run_func_def(
     out: RunOut<'_>,
     ctx: &RunCtx,
-    name: &str,
+    name: &Arc<str>,
     params: &[FuncParam],
     body: &Filter,
     next: &Filter,
@@ -833,7 +833,7 @@ async fn run_func_def(
     {
         let func_state = Arc::new(Mutex::new(ctx.state.borrow().clone()));
         func_state.lock().unwrap().current_func = Some((
-            name.to_string(),
+            name.clone(),
             params.len(),
             CurrentFuncDef {
                 state: func_state.clone(),
@@ -877,7 +877,7 @@ async fn run_func_def(
 async fn run_func_call(
     out: RunOut<'_>,
     ctx: &RunCtx,
-    name: &str,
+    name: &Arc<str>,
     args: &[Filter],
     json: &Json,
 ) -> RunEnd {
@@ -918,7 +918,7 @@ async fn run_func_call(
 
     // Try recursive call
     if let Some((curr_name, curr_argc, curr_func)) = ctx.get_current_func() {
-        if curr_name == name && curr_argc == argc {
+        if curr_name == *name && curr_argc == argc {
             let func_def = FuncDef {
                 state: curr_func.state.lock().unwrap().clone(),
                 params: curr_func.params,
@@ -946,7 +946,7 @@ async fn run_func_call(
 async fn run_label(
     out: RunOut<'_>,
     ctx: &RunCtx,
-    label: &str,
+    label: &Arc<str>,
     then: &Filter,
     json: &Json,
 ) -> RunEnd {
@@ -962,7 +962,7 @@ async fn run_label(
     }
 
     if let Some(RunEndValue::Break(break_label)) = results.end() {
-        if break_label != label {
+        if break_label != *label {
             return Some(RunEndValue::Break(break_label));
         }
     }
@@ -970,9 +970,9 @@ async fn run_label(
     None
 }
 
-async fn run_break(ctx: &RunCtx, label: &str) -> RunEnd {
+async fn run_break(ctx: &RunCtx, label: &Arc<str>) -> RunEnd {
     if ctx.has_label(label) {
-        Some(RunEndValue::Break(label.to_string()))
+        Some(RunEndValue::Break(label.clone()))
     } else {
         Some(str_error(format!("$*label-{label} is not defined")))
     }
@@ -982,8 +982,8 @@ async fn run_loc(out: RunOut<'_>, file: &str, line: usize) -> RunEnd {
     yield_!(
         out,
         Json::Object(HashMap::from([
-            ("file".to_string(), Json::String(file.to_string())),
-            ("line".to_string(), Json::Number(Number::Int(line.into()))),
+            ("file".into(), Json::String(file.into())),
+            ("line".into(), Json::Number(Number::Int(line.into()))),
         ]))
     );
     None
