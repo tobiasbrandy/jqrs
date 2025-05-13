@@ -86,39 +86,33 @@ impl RunCtx {
         self.state.borrow_mut().vars.remove(name)
     }
 
-    fn get_builtin(&self, name: &Arc<str>, argc: usize) -> Option<&FuncDef> {
+    fn get_builtin(&self, name: Arc<str>, argc: usize) -> Option<&FuncDef> {
         let builtins = match &self.custom_builtins {
             Some(builtins) => builtins,
             None => &builtins::JQ_BUILTINS,
         };
 
-        builtins.get(&(name.clone(), argc))
+        builtins.get(&(name, argc))
     }
 
-    fn get_func(&self, name: &Arc<str>, argc: usize) -> Option<FuncDef> {
-        self.state.borrow().funcs.get(&(name.clone(), argc)).cloned()
+    fn get_func(&self, name: Arc<str>, argc: usize) -> Option<FuncDef> {
+        self.state.borrow().funcs.get(&(name, argc)).cloned()
     }
 
-    fn insert_func(&self, name: &Arc<str>, argc: usize, func: FuncDef) -> Option<FuncDef> {
-        self.state
-            .borrow_mut()
-            .funcs
-            .insert((name.clone(), argc), func)
+    fn insert_func(&self, name: Arc<str>, argc: usize, func: FuncDef) -> Option<FuncDef> {
+        self.state.borrow_mut().funcs.insert((name, argc), func)
     }
 
-    fn remove_func(&self, name: &Arc<str>, argc: usize) -> Option<FuncDef> {
-        self.state
-            .borrow_mut()
-            .funcs
-            .remove(&(name.clone(), argc))
+    fn remove_func(&self, name: Arc<str>, argc: usize) -> Option<FuncDef> {
+        self.state.borrow_mut().funcs.remove(&(name, argc))
     }
 
     fn has_label(&self, label: &str) -> bool {
         self.state.borrow().labels.contains(label)
     }
 
-    fn insert_label(&self, label: &Arc<str>) -> bool {
-        self.state.borrow_mut().labels.insert(label.clone())
+    fn insert_label(&self, label: Arc<str>) -> bool {
+        self.state.borrow_mut().labels.insert(label)
     }
 
     fn remove_label(&self, label: &str) -> bool {
@@ -828,7 +822,7 @@ async fn run_func_def(
         }
     }
 
-    let prev_func = ctx.remove_func(name, params.len());
+    let prev_func = ctx.remove_func(name.clone(), params.len());
 
     {
         let func_state = Arc::new(Mutex::new(ctx.state.borrow().clone()));
@@ -843,7 +837,7 @@ async fn run_func_def(
         ));
 
         ctx.insert_func(
-            name,
+            name.clone(),
             params.len(),
             FuncDef {
                 state: func_state.lock().unwrap().clone(),
@@ -865,9 +859,9 @@ async fn run_func_def(
     let restore_scope = ctx.file == RunFile::Main || !ctx.is_top_level();
     if restore_scope {
         if let Some(prev_func) = prev_func {
-            ctx.insert_func(name, params.len(), prev_func);
+            ctx.insert_func(name.clone(), params.len(), prev_func);
         } else {
-            ctx.remove_func(name, params.len());
+            ctx.remove_func(name.clone(), params.len());
         }
     }
 
@@ -929,13 +923,13 @@ async fn run_func_call(
     }
 
     // Try user function call
-    if let Some(func) = ctx.get_func(name, argc) {
+    if let Some(func) = ctx.get_func(name.clone(), argc) {
         let func = func.clone();
         return func_call(out, ctx, func, args, json).await;
     }
 
     // Try jq builtin call
-    if let Some(func) = ctx.get_builtin(name, argc) {
+    if let Some(func) = ctx.get_builtin(name.clone(), argc) {
         return func_call(out, ctx, func.clone(), args, json).await;
     }
 
@@ -950,7 +944,7 @@ async fn run_label(
     then: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let inserted = ctx.insert_label(label);
+    let inserted = ctx.insert_label(label.clone());
 
     let mut results = RunGen::build(ctx, then, json);
     for result in &mut results {
