@@ -69,6 +69,8 @@ pub async fn run_rs_builtin(
         ("_lesseq",     2) => less_equal,
         ("_greatereq",  2) => greater_equal,
         ("sort",        0) => sort,
+        ("infinite",    0) => infinite,
+        ("nan",         0) => nan,
     )
 }
 
@@ -468,6 +470,20 @@ async fn sort(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> Ru
             "{} cannot be sorted, as it is not an array",
             json_fmt_error(json)
         ))),
+    })
+    .await
+}
+
+async fn infinite(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    nullary(out, ctx, args, json, |_| {
+        Ok(Json::Number(Number::infinity()))
+    })
+    .await
+}
+
+async fn nan(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    nullary(out, ctx, args, json, |_| {
+        Ok(Json::Number(Number::nan()))
     })
     .await
 }
