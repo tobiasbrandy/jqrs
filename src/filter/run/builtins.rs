@@ -125,23 +125,23 @@ async fn binary(
 ) -> RunEnd {
     let (a, b) = match args {
         [a, b] => (a, b),
-        _ => panic!("Binary functions takes two arguments"),
+        _ => panic!("Binary functions take two arguments"),
     };
 
-    let mut a_gen = RunGen::build(ctx, a, json);
-    for a in &mut a_gen {
-        let mut b_gen = RunGen::build(ctx, b, json);
-        for b in &mut b_gen {
+    let mut b_gen = RunGen::build(ctx, b, json);
+    for b in &mut b_gen {
+        let mut a_gen = RunGen::build(ctx, a, json);
+        for a in &mut a_gen {
             match f(&a, &b, json) {
                 Ok(val) => yield_!(out, val),
                 Err(end) => return Some(end),
             }
         }
-        if let Some(end) = b_gen.end() {
+        if let Some(end) = a_gen.end() {
             return Some(end);
         }
     }
-    if let Some(end) = a_gen.end() {
+    if let Some(end) = b_gen.end() {
         return Some(end);
     }
 
