@@ -53,6 +53,7 @@ pub async fn run_rs_builtin(
     dispatch!(
         ("empty",       0) => empty,
         ("not",         0) => not,
+        ("range",       2) => range,
     //  ("path",        1) => path,
     //  ("range",       2) => range,
         ("_plus",       2) => plus,
@@ -157,6 +158,76 @@ async fn empty(_: RunOut<'_>, _: &RunCtx, args: &[Filter], _: &Json) -> RunEnd {
 
 async fn not(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     nullary(out, ctx, args, json, |json| Ok(Json::Bool(!json.to_bool()))).await
+}
+
+async fn range(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    async fn range(out: &RunOut<'_>, start: &Json, end: &Json) -> RunEnd {
+        match (start, end) {
+            (Json::Number(start), Json::Number(end)) => {
+                if start.is_nan() {
+                    // Infinite null
+                    loop {
+                        yield_!(out, Json::Number(Number::nan()));
+                    }
+                }
+
+                let mut curr = start.clone();
+
+                if end.is_nan() || end.is_pos_infinite() {
+                    // Infinite
+                    loop {
+                        yield_!(out, Json::Number(curr.clone()));
+                        curr.inc_mut();
+                    }
+                }
+
+                if start.is_neg_infinite() {
+                    // Infinite neg_infinite
+                    loop {
+                        yield_!(out, Json::Number(start.clone()));
+                    }
+                }
+
+                if start.is_pos_infinite() || end.is_neg_infinite() {
+                    return None;
+                }
+
+                let mut len = (end - start).to_integer(Round::Up).unwrap();
+                while len > 0 {
+                    yield_!(out, Json::Number(curr.clone()));
+                    curr.inc_mut();
+                    len -= 1;
+                }
+
+                None
+            }
+            (_, _) => Some(str_error("Range bounds must be numeric".to_string())),
+        }
+    }
+
+    // Argument cross product order is backwards (don't know why, ask jq)
+    let (a, b) = match args {
+        [a, b] => (a, b),
+        _ => panic!("Binary functions take two arguments"),
+    };
+
+    let mut a_gen = RunGen::build(ctx, a, json);
+    for a in &mut a_gen {
+        let mut b_gen = RunGen::build(ctx, b, json);
+        for b in &mut b_gen {
+            if let Some(end) = range(&out, &a, &b).await {
+                return Some(end);
+            }
+        }
+        if let Some(end) = b_gen.end() {
+            return Some(end);
+        }
+    }
+    if let Some(end) = a_gen.end() {
+        return Some(end);
+    }
+
+    None
 }
 
 async fn plus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
