@@ -39,6 +39,18 @@ impl Number {
         }
     }
 
+    pub fn is_positive(&self) -> bool {
+        match self {
+            Number::Int(i) => i.is_positive(),
+            Number::Decimal(f) => f.is_sign_positive(),
+        }
+    }
+    pub fn is_negative(&self) -> bool {
+        match self {
+            Number::Int(i) => i.is_negative(),
+            Number::Decimal(f) => f.is_sign_negative(),
+        }
+    }
     pub fn is_nan(&self) -> bool {
         match self {
             Number::Int(_) => false,
@@ -51,10 +63,38 @@ impl Number {
             Number::Decimal(f) => f.is_infinite(),
         }
     }
+    pub fn is_pos_infinite(&self) -> bool {
+        self.is_infinite() && self.is_positive()
+    }
+    pub fn is_neg_infinite(&self) -> bool {
+        self.is_infinite() && self.is_negative()
+    }
     pub fn is_zero(&self) -> bool {
         match self {
             Number::Int(i) => i.is_zero(),
             Number::Decimal(f) => f.is_zero(),
+        }
+    }
+
+    pub fn inc(mut self) -> Self {
+        self.inc_mut();
+        self
+    }
+    pub fn inc_mut(&mut self) {
+        match self {
+            Number::Int(i) => *i += Integer::ONE,
+            Number::Decimal(f) => *f += Integer::ONE,
+        }
+    }
+
+    pub fn dec(mut self) -> Self {
+        self.dec_mut();
+        self
+    }
+    pub fn dec_mut(&mut self) {
+        match self {
+            Number::Int(i) => *i -= Integer::ONE,
+            Number::Decimal(f) => *f -= Integer::ONE,
         }
     }
 }
