@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, sync::{Arc, LazyLock}};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    sync::{Arc, LazyLock},
+};
 
 use rug::{float::Round, Integer};
 
@@ -57,13 +61,33 @@ pub async fn run_rs_builtin(
         ("_multiply",   2) => multiply,
         ("_divide",     2) => divide,
         ("_mod",        2) => modulus,
+        ("_equal",      2) => equal,
+        ("_notequal",   2) => not_equal,
+        ("_less",       2) => less,
+        ("_greater",    2) => greater,
+        ("_lesseq",     2) => less_equal,
+        ("_greatereq",  2) => greater_equal,
+        ("sort",        0) => sort,
     )
 }
 
 // -------------- Utils -------------- //
 
-fn nullary(args: &[Filter]) {
+async fn nullary(
+    out: RunOut<'_>,
+    _ctx: &RunCtx,
+    args: &[Filter],
+    json: &Json,
+    f: fn(&Json) -> RunValue,
+) -> RunEnd {
     assert!(args.is_empty(), "Nullary functions take no arguments");
+
+    match f(json) {
+        Ok(val) => yield_!(out, val),
+        Err(end) => return Some(end),
+    }
+
+    None
 }
 
 async fn unary(
@@ -127,14 +151,12 @@ async fn binary(
 // -------------- Builtins -------------- //
 
 async fn empty(_: RunOut<'_>, _: &RunCtx, args: &[Filter], _: &Json) -> RunEnd {
-    nullary(args);
+    assert!(args.is_empty(), "Nullary functions take no arguments");
     None
 }
 
-async fn not(out: RunOut<'_>, _: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    nullary(args);
-    yield_!(out, Json::Bool(!json.to_bool()));
-    None
+async fn not(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    nullary(out, ctx, args, json, |json| Ok(Json::Bool(!json.to_bool()))).await
 }
 
 async fn plus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
@@ -281,6 +303,99 @@ async fn modulus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) ->
             "{} and {} cannot be divided (remainder)",
             json_fmt_error(l),
             json_fmt_error(r)
+        ))),
+    })
+    .await
+}
+
+async fn equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        Ok(Json::Bool({
+            if l.is_nan() || r.is_nan() {
+                false
+            } else {
+                l == r
+            }
+        }))
+    })
+    .await
+}
+
+async fn not_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        Ok(Json::Bool({
+            if l.is_nan() || r.is_nan() {
+                true
+            } else {
+                l != r
+            }
+        }))
+    })
+    .await
+}
+
+async fn less(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        Ok(Json::Bool({
+            if l.is_nan() {
+                true
+            } else {
+                l < r
+            }
+        }))
+    })
+    .await
+}
+
+async fn less_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        Ok(Json::Bool({
+            if l.is_nan() {
+                true
+            } else {
+                l <= r
+            }
+        }))
+    })
+    .await
+}
+
+async fn greater(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        Ok(Json::Bool({
+            if l.is_nan() {
+                false
+            } else {
+                l > r
+            }
+        }))
+    })
+    .await
+}
+
+async fn greater_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        Ok(Json::Bool({
+            if l.is_nan() {
+                false
+            } else {
+                l >= r
+            }
+        }))
+    })
+    .await
+}
+
+async fn sort(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    nullary(out, ctx, args, json, |json| match json {
+        Json::Array(arr) => {
+            let mut new_arr = arr.clone();
+            new_arr.sort();
+            Ok(Json::Array(new_arr))
+        }
+        _ => Err(str_error(format!(
+            "{} cannot be sorted, as it is not an array",
+            json_fmt_error(json)
         ))),
     })
     .await

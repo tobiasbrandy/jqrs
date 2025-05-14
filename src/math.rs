@@ -1,14 +1,13 @@
 use core::f32;
 use std::{
-    ops::{Add, Div, Mul, Neg, Sub},
-    str::FromStr,
+    cmp::Ordering, ops::{Add, Div, Mul, Neg, Sub}, str::FromStr
 };
 
 use rug::{float::ParseFloatError, ops::CompleteRound, Float, Integer};
 
 pub const PRECISION: u32 = 53; // f64 (double) precision
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Number {
     Int(Integer),
     Decimal(Float),
@@ -40,6 +39,18 @@ impl Number {
         }
     }
 
+    pub fn is_nan(&self) -> bool {
+        match self {
+            Number::Int(_) => false,
+            Number::Decimal(f) => f.is_nan(),
+        }
+    }
+    pub fn is_infinite(&self) -> bool {
+        match self {
+            Number::Int(_) => false,
+            Number::Decimal(f) => f.is_infinite(),
+        }
+    }
     pub fn is_zero(&self) -> bool {
         match self {
             Number::Int(i) => i.is_zero(),
@@ -68,6 +79,39 @@ impl FromStr for Number {
         }
     }
 }
+impl Ord for Number {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.is_nan(), other.is_nan()) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            (false, false) => {},
+        }
+
+        let mret = match (self, other) {
+            (Number::Int(a), Number::Int(b)) => Some(a.cmp(b)),
+            (Number::Decimal(a), Number::Decimal(b)) => a.partial_cmp(b),
+            (Number::Int(a), Number::Decimal(b)) => a.partial_cmp(b),
+            (Number::Decimal(a), Number::Int(b)) => a.partial_cmp(b),
+        };
+
+        match mret {
+            Some(ret) => ret,
+            None => unreachable!("NaN values were previously handled, so partial_cmp should never return None"),
+        }
+    }
+}
+impl PartialOrd for Number {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for Number {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl Eq for Number {}
 impl Add for &Number {
     type Output = Number;
 
