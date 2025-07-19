@@ -4,7 +4,7 @@ def map(f): [.[] | f];
 def select(f): if f then . else empty end;
 # def unique: group_by(.) | map(.[0]);
 # def unique_by(f): group_by(f) | map(.[0]);
-# def add: reduce .[] as $x (null; . + $x);
+def add: reduce .[] as $x (null; . + $x);
 # def del(f): delpaths([path(f)]);
 # def _assign(paths; $value): reduce path(paths) as $p (.; setpath($p; $value));
 # def _modify(paths; update):
@@ -29,10 +29,10 @@ def select(f): if f then . else empty end;
 # def map_values(f): .[] |= f;
 
 # # recurse
-# def recurse(f): def r: ., (f | r); r;
-# def recurse(f; cond): def r: ., (f | select(cond) | r); r;
-# def recurse: recurse(.[]?);
-# def recurse_down: recurse;
+def recurse(f): def r: ., (f | r); r;
+def recurse(f; cond): def r: ., (f | select(cond) | r); r;
+def recurse: recurse(.[]?);
+def recurse_down: recurse;
 
 # def to_entries: [keys_unsorted[] as $k | {key: $k, value: .[$k]}];
 # def from_entries: map({(.key // .Key // .name // .Name): (if has("value") then .value else .Value end)}) | add | .//={};
@@ -55,8 +55,8 @@ def select(f): if f then . else empty end;
 # def normals: select(isnormal);
 # def finites: select(isfinite);
 # def strings: select(type == "string");
-# def nulls: select(. == null);
-# def values: select(. != null);
+def nulls: select(. == null);
+def values: select(. != null);
 # def scalars: select(type|. != "array" and . != "object");
 # def leaf_paths: paths(scalars);
 # def join($x): reduce .[] as $i (null;
@@ -66,11 +66,11 @@ def select(f): if f then . else empty end;
 # def _flatten($x): reduce .[] as $i ([]; if $i | type == "array" and $x != 0 then . + ($i | _flatten($x-1)) else . + [$i] end);
 # def flatten($x): if $x < 0 then error("flatten depth must not be negative") else _flatten($x) end;
 # def flatten: _flatten(-1);
-# def range($x): range(0;$x);
-# # def fromdateiso8601: strptime("%Y-%m-%dT%H:%M:%SZ")|mktime;
-# # def todateiso8601: strftime("%Y-%m-%dT%H:%M:%SZ");
-# # def fromdate: fromdateiso8601;
-# # def todate: todateiso8601;
+def range($x): range(0;$x);
+# def fromdateiso8601: strptime("%Y-%m-%dT%H:%M:%SZ")|mktime;
+# def todateiso8601: strftime("%Y-%m-%dT%H:%M:%SZ");
+# def fromdate: fromdateiso8601;
+# def todate: todateiso8601;
 # def match(re; mode): _match_impl(re; mode; false)|.[];
 # def match($val): ($val|type) as $vt | if $vt == "string" then match($val; null)
 #    elif $vt == "array" and ($val | length) > 1 then match($val[0]; $val[1])
@@ -147,12 +147,12 @@ def select(f): if f then . else empty end;
 #     | sub1($fla; $gs);
 
 # def sub($re; s): sub($re; s; "");
-# # repeated substitution of re (which may contain named captures)
+# repeated substitution of re (which may contain named captures)
 # def gsub($re; s; flags): sub($re; s; flags + "g");
 # def gsub($re; s): sub($re; s; "g");
 
-# ########################################################################
-# # generic iterator/generator
+########################################################################
+# generic iterator/generator
 # def while(cond; update):
 #      def _while:
 #          if cond then ., (update | _while) else empty end;
@@ -165,21 +165,22 @@ def select(f): if f then . else empty end;
 #     if $n > 0 then label $out | foreach exp as $item ($n; .-1; $item, if . <= 0 then break $out else empty end)
 #     elif $n == 0 then empty
 #     else exp end;
-# # range/3, with a `by` expression argument
+# range/3, with a `by` expression argument
 # def range($init; $upto; $by):
 #     if $by > 0 then $init|while(. < $upto; . + $by)
 #   elif $by < 0 then $init|while(. > $upto; . + $by)
 #   else empty end;
-# def first(g): label $out | g | ., break $out;
-# def isempty(g): first((g|false), true);
-# def all(generator; condition): isempty(generator|condition and empty);
-# def any(generator; condition): isempty(generator|condition or empty)|not;
-# def all(condition): all(.[]; condition);
-# def any(condition): any(.[]; condition);
-# def all: all(.[]; .);
-# def any: any(.[]; .);
-# def last(g): reduce g as $item (null; $item);
-# def nth($n; g): if $n < 0 then error("nth doesn't support negative indices") else last(limit($n + 1; g)) end;
+def first(g): label $out | g | ., break $out;
+def isempty(g): first((g|false), true);
+def all(generator; condition): isempty(generator|condition and empty);
+def any(generator; condition): isempty(generator|condition or empty)|not;
+def all(condition): all(.[]; condition);
+def any(condition): any(.[]; condition);
+def all: all(.[]; .);
+def any: any(.[]; .);
+def last(g): reduce g as $item (null; $item);
+def nth
+($n; g): if $n < 0 then error("nth doesn't support negative indices") else last(limit($n + 1; g)) end;
 # def first: .[0];
 # def last: .[-1];
 # def nth($n): .[$n];

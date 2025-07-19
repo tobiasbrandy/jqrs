@@ -34,22 +34,23 @@ enum RunFile {
 struct FuncDef {
     state: RunState,
     params: Vec<Arc<str>>,
-    body: Filter,
+    body: Arc<Filter>,
 }
 
 #[derive(Debug, Clone)]
 struct CurrentFuncDef {
     state: Arc<Mutex<RunState>>,
     params: Vec<Arc<str>>,
-    body: Filter,
+    body: Arc<Filter>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct RunState {
     vars: HashMap<Arc<str>, Json>,
-    funcs: HashMap<(Arc<str>, usize), FuncDef>,
+    funcs: HashMap<(Arc<str>, usize), Arc<FuncDef>>,
     labels: HashSet<Arc<str>>,
     current_func: Option<(Arc<str>, usize, CurrentFuncDef)>,
+    current_func_args: HashMap<Arc<str>, Arc<Filter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,15 +96,15 @@ impl RunCtx {
         builtins.get(&(name, argc))
     }
 
-    fn get_func(&self, name: Arc<str>, argc: usize) -> Option<FuncDef> {
+    fn get_func(&self, name: Arc<str>, argc: usize) -> Option<Arc<FuncDef>> {
         self.state.borrow().funcs.get(&(name, argc)).cloned()
     }
 
-    fn insert_func(&self, name: Arc<str>, argc: usize, func: FuncDef) -> Option<FuncDef> {
+    fn insert_func(&self, name: Arc<str>, argc: usize, func: Arc<FuncDef>) -> Option<Arc<FuncDef>> {
         self.state.borrow_mut().funcs.insert((name, argc), func)
     }
 
-    fn remove_func(&self, name: Arc<str>, argc: usize) -> Option<FuncDef> {
+    fn remove_func(&self, name: Arc<str>, argc: usize) -> Option<Arc<FuncDef>> {
         self.state.borrow_mut().funcs.remove(&(name, argc))
     }
 
@@ -799,7 +800,7 @@ async fn run_func_def(
     ctx: &RunCtx,
     name: &Arc<str>,
     params: &[FuncParam],
-    body: &Filter,
+    body: &Arc<Filter>,
     next: &Filter,
     json: &Json,
 ) -> RunEnd {
@@ -812,11 +813,11 @@ async fn run_func_def(
                 param_names.push(name.clone());
             }
             FuncParam::VarParam(name) => {
-                body = Filter::VarDef(
+                body = Arc::new(Filter::VarDef(
                     name.clone(),
                     Box::new(Filter::FuncCall(name.clone(), Vec::new())),
-                    Box::new(body.clone()),
-                );
+                    body.clone(),
+                ));
                 param_names.push(name.clone());
             }
         }
@@ -839,11 +840,11 @@ async fn run_func_def(
         ctx.insert_func(
             name.clone(),
             params.len(),
-            FuncDef {
+            Arc::new(FuncDef {
                 state: func_state.lock().unwrap().clone(),
                 params: param_names,
                 body,
-            },
+            }),
         );
 
         // drop func_state -> Arc only owned by ctx.state.current_func
@@ -872,26 +873,26 @@ async fn run_func_call(
     out: RunOut<'_>,
     ctx: &RunCtx,
     name: &Arc<str>,
-    args: &[Filter],
+    args: &[Arc<Filter>],
     json: &Json,
 ) -> RunEnd {
     async fn func_call(
         out: RunOut<'_>,
         ctx: &RunCtx,
-        mut func: FuncDef,
-        args: &[Filter],
+        func: FuncDef,
+        args: &[Arc<Filter>],
         json: &Json,
     ) -> RunEnd {
-        for (param, arg) in zip(func.params, args) {
-            func.state.funcs.insert(
-                (param, 0),
-                FuncDef {
-                    state: ctx.state.borrow().clone(),
-                    params: vec![],
-                    body: arg.clone(),
-                },
-            );
-        }
+        // for (param, arg) in zip(func.params, args) {
+        //     func.state.funcs.insert(
+        //         (param, 0),
+        //         Arc::new(FuncDef {
+        //             state: ctx.state.borrow().clone(),
+        //             params: vec![],
+        //             body: arg.clone(),
+        //         },
+        //     ));
+        // }
 
         std::mem::swap(&mut *ctx.state.borrow_mut(), &mut func.state);
 
@@ -922,10 +923,19 @@ async fn run_func_call(
         }
     }
 
+    if argc == 0 {
+        if let Some(arg_body) = ctx.state.borrow().current_func_args.get(name) {
+            let mut results = RunGen::build(ctx, arg_body, json);
+            for result in &mut results {
+                yield_!(out, result);
+            }
+            return results.end()
+        }
+    }
+
     // Try user function call
     if let Some(func) = ctx.get_func(name.clone(), argc) {
-        let func = func.clone();
-        return func_call(out, ctx, func, args, json).await;
+        return func_call(out, ctx, func.clone(), args, json).await;
     }
 
     // Try jq builtin call
@@ -1023,13 +1033,15 @@ mod test {
     #[test]
     fn test_run() {
         let input = r#"
-            [1,2,3,4]
+            [1,2,20,nan,3,4,60,nan,infinity,-infinity]
         "#;
         let filter = r#"
             def square: . * .;
-            def is_even: [true, false][. % 2];
+            def is_even: . % 2 == 0;
             def square_evens: [.[] | select(is_even)] | map(. * .);
-            square_evens
+            #square_evens |
+            [.[] | select(. > 10 | not)] |
+            sort
         "#;
 
         let input: Json = input.parse().expect("json input parse error");

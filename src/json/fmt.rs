@@ -1,3 +1,5 @@
+// TODO: nan es null BLANCO
+// TODO: infinite is MAX FLOAT
 use std::collections::HashMap;
 
 use either::Either;

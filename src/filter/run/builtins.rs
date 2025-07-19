@@ -15,7 +15,7 @@ use crate::{
     math::Number,
 };
 
-use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunState, RunValue};
+use super::{yield_, FuncDef, RunCtx, RunEnd, RunEndValue, RunFile, RunGen, RunOut, RunState, RunValue};
 
 pub static JQ_BUILTINS: LazyLock<HashMap<(Arc<str>, usize), FuncDef>> = LazyLock::new(|| {
     let ctx = RunCtx {
@@ -24,11 +24,11 @@ pub static JQ_BUILTINS: LazyLock<HashMap<(Arc<str>, usize), FuncDef>> = LazyLock
         state: RefCell::new(RunState::default()),
     };
 
-    include_str!("builtins.jq")
-        .parse::<Filter>()
-        .expect("Error parsing jq builtins")
-        .run(&ctx, &Json::Null)
-        .last();
+    let builtins_source = include_str!("builtins.jq");
+    let parsed_builtins = builtins_source.parse::<Filter>();
+    let parsed_builtins = parsed_builtins.expect("Error parsing jq builtins");
+    let result_gen = parsed_builtins.run(&ctx, &Json::Null);
+    let result = result_gen.last();
 
     ctx.state.into_inner().funcs
 });
@@ -38,7 +38,7 @@ pub async fn run_rs_builtin(
     argc: usize,
     out: RunOut<'_>,
     ctx: &RunCtx,
-    args: &[Filter],
+    args: &[Arc<Filter>],
     json: &Json,
 ) -> RunEnd {
     macro_rules! dispatch {
@@ -71,6 +71,7 @@ pub async fn run_rs_builtin(
         ("sort",        0) => sort,
         ("infinite",    0) => infinite,
         ("nan",         0) => nan,
+        ("error",       0) => error,
     )
 }
 
@@ -484,6 +485,13 @@ async fn infinite(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -
 async fn nan(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     nullary(out, ctx, args, json, |_| {
         Ok(Json::Number(Number::nan()))
+    })
+    .await
+}
+
+async fn error(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    nullary(out, ctx, args, json, |json| {
+        Err(RunEndValue::Error(json.clone()))
     })
     .await
 }

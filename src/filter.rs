@@ -33,7 +33,7 @@ pub enum Filter {
 
     // Variable
     Var(Arc<str>),                          // $<name>
-    VarDef(Arc<str>, FilterRef, FilterRef), // <name> as <body> | <next>
+    VarDef(Arc<str>, FilterRef, Arc<Filter>), // <name> as <body> | <next>
 
     // Literals
     ArrayLit(FilterRef),              // [<array>]
@@ -56,8 +56,8 @@ pub enum Filter {
     Foreach(FilterRef, Arc<str>, FilterRef, FilterRef, FilterRef), // foreach <exp> as $<name> (<init>; <update>; <extract>)
 
     // Functions
-    FuncDef(Arc<str>, Vec<FuncParam>, FilterRef, FilterRef), // def <name>(<params>): <body>; <next>
-    FuncCall(Arc<str>, Vec<Filter>),                         // <name>(<args>)
+    FuncDef(Arc<str>, Vec<FuncParam>, Arc<Filter>, FilterRef), // def <name>(<params>): <body>; <next>
+    FuncCall(Arc<str>, Vec<Arc<Filter>>),                         // <name>(<args>)
 
     // Label & Break
     Label(Arc<str>, FilterRef), // label $<name> | <next>
