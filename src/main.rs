@@ -1,11 +1,15 @@
 use std::process::ExitCode;
 
+pub mod options;
+
 use jqrs::{
     filter::{self, Filter},
     json::parser::{JsonParser, JsonParserError},
     lexer::LexSource,
     parser::ParserPos,
 };
+
+use crate::options::JqOptions;
 
 pub enum SourceType {
     File,
@@ -14,6 +18,9 @@ pub enum SourceType {
 }
 
 fn main() -> ExitCode {
+    let options = JqOptions::parse(std::env::args_os());
+    println!("{options:#?}");
+
     let source_type = SourceType::Stdin;
     let input_path = "tests/big.jsonl";
 
