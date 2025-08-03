@@ -1,6 +1,9 @@
 use std::future::Future;
 
-use genawaiter::{stack::{Co, Gen, Shelf}, GeneratorState};
+use genawaiter::{
+    stack::{Co, Gen, Shelf},
+    GeneratorState,
+};
 
 use ouroboros::self_referencing;
 
@@ -30,13 +33,10 @@ pub struct RunGen<'a> {
 }
 impl<'a> RunGen<'a> {
     pub fn build(ctx: &'a RunCtx, filter: &'a Filter, json: &'a Json) -> Self {
-        unsafe fn to_static<'a, F: Future<Output = RunEnd> + 'a>(
-            fut: F,
-        ) -> RunGenFuture {
-            std::mem::transmute::<
-                std::pin::Pin<Box<dyn Future<Output = RunEnd> + 'a>>,
-                RunGenFuture,
-            >(Box::pin(fut))
+        unsafe fn to_static<'a, F: Future<Output = RunEnd> + 'a>(fut: F) -> RunGenFuture {
+            std::mem::transmute::<std::pin::Pin<Box<dyn Future<Output = RunEnd> + 'a>>, RunGenFuture>(
+                Box::pin(fut),
+            )
         }
 
         Self {

@@ -2,7 +2,10 @@ mod builtins;
 mod gen;
 
 use std::{
-    cell::RefCell, collections::{HashMap, HashSet}, iter::zip, sync::{Arc, Mutex}
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    iter::zip,
+    sync::{Arc, Mutex},
 };
 
 use either::Either;

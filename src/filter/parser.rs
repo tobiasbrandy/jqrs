@@ -13,6 +13,7 @@ use super::{
     Filter, FuncParam,
 };
 
+use thiserror::Error;
 use FilterToken as FT;
 
 pub struct FilterParser<'a>(Parser<'a, FilterToken, FilterParserError>);
@@ -46,101 +47,35 @@ impl<'a> FilterParser<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum FilterParserError {
-    LexError(FilterLexError),
-    StringParserError(FilterStringParserError),
+    #[error(transparent)]
+    LexError(#[from] FilterLexError),
+    #[error(transparent)]
+    ExpectationFailed(#[from] ExpectationFailed<FilterToken>),
+    #[error(transparent)]
+    StringParserError(#[from] FilterStringParserError),
+    #[error("expected number got {0}")]
     ExpectedNumber(FilterToken),
+    #[error("unsupported operator {0}")]
     UnsupportedOperator(Op),
+    #[error("non-associative operator {0}")]
     NonAssocOp(Op),
-    UnmatchedExpectation(FilterToken, FilterToken), // expected, actual
+    #[error("unexpected token {0}")]
     UnexpectedToken(FilterToken),
 }
-impl std::fmt::Display for FilterParserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LexError(err) => write!(f, "{err}"),
-            Self::StringParserError(err) => write!(f, "error parsing string: {err}"),
-            Self::ExpectedNumber(tok) => write!(f, "expected number got {tok}"),
-            Self::UnsupportedOperator(op) => write!(f, "unsupported operator {op}"),
-            Self::NonAssocOp(op) => write!(f, "non-associative operator {op}"),
-            Self::UnmatchedExpectation(expected, actual) => {
-                write!(f, "expected {expected} got {actual}")
-            }
-            Self::UnexpectedToken(tok) => write!(f, "unexpected token {tok}"),
-        }
-    }
-}
-impl std::error::Error for FilterParserError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::LexError(err) => Some(err),
-            Self::StringParserError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-impl From<FilterLexError> for FilterParserError {
-    fn from(err: FilterLexError) -> Self {
-        Self::LexError(err)
-    }
-}
-impl From<ExpectationFailed<'_, FilterToken>> for FilterParserError {
-    fn from(
-        ExpectationFailed {
-            expected, actual, ..
-        }: ExpectationFailed<'_, FilterToken>,
-    ) -> Self {
-        Self::UnmatchedExpectation(expected, actual)
-    }
-}
-impl From<FilterStringParserError> for FilterParserError {
-    fn from(err: FilterStringParserError) -> Self {
-        Self::StringParserError(err)
-    }
-}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum FilterStringParserError {
-    LexError(FilterLexError),
-    UnmatchedExpectation(FilterStringToken, FilterStringToken), // expected, actual
+    #[error(transparent)]
+    LexError(#[from] FilterLexError),
+    #[error(transparent)]
+    ExpectationFailed(#[from] ExpectationFailed<FilterStringToken>),
+    #[error("unexpected token {0}")]
     UnexpectedToken(FilterStringToken),
 }
-impl std::fmt::Display for FilterStringParserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LexError(err) => write!(f, "{err}"),
-            Self::UnmatchedExpectation(expected, actual) => {
-                write!(f, "expected {expected} got {actual}")
-            }
-            Self::UnexpectedToken(tok) => write!(f, "Unexpected token {tok}"),
-        }
-    }
-}
-impl std::error::Error for FilterStringParserError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::LexError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-impl From<FilterLexError> for FilterStringParserError {
-    fn from(err: FilterLexError) -> Self {
-        Self::LexError(err)
-    }
-}
-impl From<ExpectationFailed<'_, FilterStringToken>> for FilterStringParserError {
-    fn from(
-        ExpectationFailed {
-            expected, actual, ..
-        }: ExpectationFailed<'_, FilterStringToken>,
-    ) -> Self {
-        Self::UnmatchedExpectation(expected, actual)
-    }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpAssoc {
     Left,
     Right,
@@ -691,8 +626,10 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             }
         }
         FT::Field(field) => {
-            let filter =
-                Filter::Project(Box::new(Filter::Identity), Box::new(Filter::string(field.to_string())));
+            let filter = Filter::Project(
+                Box::new(Filter::Identity),
+                Box::new(Filter::string(field.to_string())),
+            );
             try_opt(parser, filter)?
         }
         tok => return Err(FilterParserError::UnexpectedToken(tok)),
@@ -700,7 +637,9 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
 
     loop {
         term = match parser.pop_token()? {
-            FT::Field(field) => Filter::Project(Box::new(term), Box::new(Filter::string(field.to_string()))),
+            FT::Field(field) => {
+                Filter::Project(Box::new(term), Box::new(Filter::string(field.to_string())))
+            }
             FT::Dot => Filter::Project(Box::new(term), Box::new(String(parser)?)),
             FT::LBrack => {
                 fn parse_slice(parser: &mut FParser, term: Filter) -> FResult<Filter> {
@@ -816,7 +755,7 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
             tok => return Err(FilterParserError::UnexpectedToken(tok)),
         };
 
-        return Ok((Filter::string(key.to_string()), Filter::Var(key)))
+        return Ok((Filter::string(key.to_string()), Filter::Var(key)));
     }
 
     let mut is_exp = false;
@@ -838,10 +777,10 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
         parser.expect_token(FT::Colon)?;
         ExpD(parser)?
     } else if is_exp {
-        return Err(FilterParserError::UnmatchedExpectation(
-            FT::Colon,
-            parser.pop_token()?,
-        ));
+        return Err(FilterParserError::ExpectationFailed(ExpectationFailed {
+            expected: FT::Colon,
+            actual: parser.pop_token()?,
+        }));
     } else {
         Filter::Project(Box::new(Filter::Identity), Box::new(key.clone()))
     };

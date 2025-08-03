@@ -2,9 +2,12 @@ use logos::{
     source::{self, Source},
     Lexer, Logos, Skip,
 };
-use std::{io::{self, Read, Stdin}, str::FromStr};
 use std::{cell::Ref, fs::File, ops::Deref, path::Path};
 use std::{cell::RefCell, ops::Range};
+use std::{
+    io::{self, Read, Stdin},
+    str::FromStr,
+};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct LinePos {

@@ -482,8 +482,5 @@ async fn infinite(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -
 }
 
 async fn nan(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    nullary(out, ctx, args, json, |_| {
-        Ok(Json::Number(Number::nan()))
-    })
-    .await
+    nullary(out, ctx, args, json, |_| Ok(Json::Number(Number::nan()))).await
 }

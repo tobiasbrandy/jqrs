@@ -1,79 +1,88 @@
 use std::{ops::Deref, str::FromStr, sync::Arc};
 
+use derive_more::Display;
 use logos::Logos;
 use rug::float::ParseFloatError;
+use thiserror::Error;
 
 use crate::{
     lexer::{parse, parse_escaped, register_newline, register_tab, LexSource, LinePos},
     math::Number,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Error)]
 pub enum FilterLexError {
-    NumberParseError(ParseFloatError),
+    #[error(transparent)]
+    NumberParseError(#[from] ParseFloatError),
+    #[error("invalid escape sequence {0}")]
     InvalidEscapeSeq(String),
+    #[error("invalid operator {0}")]
     InvalidOperator(String),
     #[default]
+    #[error("invalid token")]
     InvalidToken,
 }
-impl std::fmt::Display for FilterLexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NumberParseError(err) => write!(f, "{err}"),
-            Self::InvalidEscapeSeq(s) => write!(f, "invalid escape sequence {s}"),
-            Self::InvalidOperator(s) => write!(f, "invalid operator {s}"),
-            Self::InvalidToken => write!(f, "invalid token"),
-        }
-    }
-}
-impl std::error::Error for FilterLexError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::NumberParseError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-impl From<ParseFloatError> for FilterLexError {
-    fn from(err: ParseFloatError) -> Self {
-        Self::NumberParseError(err)
-    }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Display)]
 pub enum Op {
     // Arithmetic Operators
+    #[display("+")]
     Plus,
+    #[display("-")]
     Minus,
+    #[display("*")]
     Times,
+    #[display("/")]
     Div,
+    #[display("%")]
     Mod,
 
     // Flow Operators
+    #[display("|")]
     Pipe,
+    #[display("//")]
     Alt,
+    #[display("?")]
     Opt,
+    #[display("?//")]
     OptAlt,
+    #[display(",")]
     Comma,
 
     // Assignment Operators
+    #[display("=")]
     Assign,
+    #[display("+=")]
     PlusA,
+    #[display("-=")]
     MinusA,
+    #[display("*=")]
     TimesA,
+    #[display("/=")]
     DivA,
+    #[display("%=")]
     ModA,
+    #[display("|=")]
     PipeA,
+    #[display("//=")]
     AltA,
 
     // Comparison Operators
+    #[display("==")]
     Eq,
+    #[display("!=")]
     Neq,
+    #[display("<")]
     Lt,
+    #[display("<=")]
     Le,
+    #[display(">")]
     Gt,
+    #[display(">=")]
     Ge,
+    #[display("or")]
     Or,
+    #[display("and")]
     And,
 }
 impl FromStr for Op {
@@ -112,7 +121,7 @@ impl FromStr for Op {
     }
 }
 
-#[derive(Logos, Debug, Clone, PartialEq, Default)]
+#[derive(Logos, Debug, Clone, PartialEq, Default, Display)]
 #[logos(extras = LinePos)]
 #[logos(error = FilterLexError)]
 #[logos(source = LexSource<'s>)]
@@ -120,67 +129,88 @@ impl FromStr for Op {
 pub enum FilterToken {
     // Literals
     #[token("true")]
+    #[display("true")]
     True,
 
     #[token("false")]
+    #[display("false")]
     False,
 
     #[token("null")]
+    #[display("null")]
     Null,
 
     #[regex(r#"([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, |lex| lex.slice().parse())]
+    #[display("{_0}")]
     Num(Number),
 
     // Keywords
     #[token("module")]
+    #[display("module")]
     Module,
 
     #[token("import")]
+    #[display("import")]
     Import,
 
     #[token("include")]
+    #[display("include")]
     Include,
 
     #[token("def")]
+    #[display("def")]
     Def,
 
     #[token("as")]
+    #[display("as")]
     As,
 
     #[token("if")]
+    #[display("if")]
     If,
 
     #[token("then")]
+    #[display("then")]
     Then,
 
     #[token("else")]
+    #[display("else")]
     Else,
 
     #[token("elif")]
+    #[display("elif")]
     Elif,
 
     #[token("end")]
+    #[display("end")]
     End,
 
     #[token("reduce")]
+    #[display("reduce")]
     Reduce,
 
     #[token("foreach")]
+    #[display("foreach")]
     Foreach,
 
     #[token("try")]
+    #[display("try")]
     Try,
 
     #[token("catch")]
+    #[display("catch")]
     Catch,
 
     #[token("label")]
+    #[display("label")]
     Label,
 
     #[token("break")]
+    #[display("break")]
     Break,
 
     #[token("__loc__")]
+    #[display("__loc__")]
     Loc,
 
     // Arithmetic Operators
@@ -213,187 +243,120 @@ pub enum FilterToken {
     #[token(">=", parse)]
     #[token("or", parse)]
     #[token("and", parse)]
+    #[display("{_0}")]
     Op(Op),
 
     // Special Filters
     #[token(".")]
+    #[display(".")]
     Dot,
 
     #[token("..")]
+    #[display("..")]
     Recr,
 
     // Parentheses
     #[token("(")]
+    #[display("(")]
     LPar,
 
     #[token(")")]
+    #[display(")")]
     RPar,
 
     // Lists
     #[token("[")]
+    #[display("[")]
     LBrack,
 
     #[token("]")]
+    #[display("]")]
     RBrack,
 
     // Objects
     #[token("{")]
+    #[display("{{")]
     LBrace,
 
     #[token("}")]
+    #[display("}}")]
     RBrace,
 
     #[token(":")]
+    #[display(":")]
     Colon,
 
     // Params
     #[token(";")]
+    #[display(";")]
     Semicolon,
 
     // Variables
     #[token("$")]
+    #[display("$")]
     Var,
 
     #[token("\"")]
+    #[display("\"")]
     Quote,
 
     // Identifiers
     #[regex(r#"([a-zA-Z_][a-zA-Z_0-9]*::)*[a-zA-Z_][a-zA-Z_0-9]*"#, |lex| Arc::from(lex.slice().deref()))]
+    #[display("{_0}")]
     Id(Arc<str>),
 
     #[regex(r#"\.[a-zA-Z_][a-zA-Z_0-9]*"#, |lex| Arc::from(&lex.slice()[1..]))]
+    #[display(".{_0}")]
     Field(Arc<str>),
 
     #[regex(r#"@[a-zA-Z0-9_]+"#, |lex| Arc::from(&lex.slice()[1..]))]
+    #[display("@{_0}")]
     Format(Arc<str>),
 
     // Control
     #[regex(r"#[^\n]*", logos::skip)]
+    #[display("")]
     _Comment,
 
     #[token("\n", register_newline)]
+    #[display(r#"\n"#)]
     _Newline,
 
     #[token("\t", register_tab)]
+    #[display(r#"\t"#)]
     _Tab,
 
-    #[allow(clippy::upper_case_acronyms)]
     #[default]
+    #[display("<EOF>")]
+    #[allow(clippy::upper_case_acronyms)]
     EOF,
 }
 
-#[derive(Logos, Debug, Clone, PartialEq, Default)]
+#[derive(Logos, Debug, Clone, PartialEq, Default, Display)]
 #[logos(extras = LinePos)]
 #[logos(error = FilterLexError)]
 #[logos(source = LexSource<'s>)]
 pub enum FilterStringToken {
     #[token("\"")]
+    #[display("\"")]
     Quote,
 
     #[regex(r#"[^\"\\\x00-\x1F\x7F]+"#, |lex| lex.slice().to_string())]
+    #[display("{_0}")]
     String(String),
 
     #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()).map_err(FilterLexError::InvalidEscapeSeq))]
+    #[display("\\{_0}")]
     Escaped(char),
 
     #[token("\\(")]
+    #[display("\\(")]
     Interpolation,
 
-    #[allow(clippy::upper_case_acronyms)]
     #[default]
+    #[display("<EOF>")]
+    #[allow(clippy::upper_case_acronyms)]
     EOF,
-}
-
-impl std::fmt::Display for Op {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Plus => write!(f, "+"),
-            Self::Minus => write!(f, "-"),
-            Self::Times => write!(f, "*"),
-            Self::Div => write!(f, "/"),
-            Self::Mod => write!(f, "%"),
-            Self::Pipe => write!(f, "|"),
-            Self::Alt => write!(f, "//"),
-            Self::Opt => write!(f, "?"),
-            Self::OptAlt => write!(f, "?//"),
-            Self::Comma => write!(f, ","),
-            Self::Assign => write!(f, "="),
-            Self::PlusA => write!(f, "+="),
-            Self::MinusA => write!(f, "-="),
-            Self::TimesA => write!(f, "*="),
-            Self::DivA => write!(f, "/="),
-            Self::ModA => write!(f, "%="),
-            Self::PipeA => write!(f, "|="),
-            Self::AltA => write!(f, "//="),
-            Self::Eq => write!(f, "=="),
-            Self::Neq => write!(f, "!="),
-            Self::Lt => write!(f, "<"),
-            Self::Le => write!(f, "<="),
-            Self::Gt => write!(f, ">"),
-            Self::Ge => write!(f, ">="),
-            Self::Or => write!(f, "or"),
-            Self::And => write!(f, "and"),
-        }
-    }
-}
-impl std::fmt::Display for FilterToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::True => write!(f, "true"),
-            Self::False => write!(f, "false"),
-            Self::Null => write!(f, "null"),
-            Self::Num(n) => write!(f, "{n}"),
-            Self::Module => write!(f, "module"),
-            Self::Import => write!(f, "import"),
-            Self::Include => write!(f, "include"),
-            Self::Def => write!(f, "def"),
-            Self::As => write!(f, "as"),
-            Self::If => write!(f, "if"),
-            Self::Then => write!(f, "then"),
-            Self::Else => write!(f, "else"),
-            Self::Elif => write!(f, "elif"),
-            Self::End => write!(f, "end"),
-            Self::Reduce => write!(f, "reduce"),
-            Self::Foreach => write!(f, "foreach"),
-            Self::Try => write!(f, "try"),
-            Self::Catch => write!(f, "catch"),
-            Self::Label => write!(f, "label"),
-            Self::Break => write!(f, "break"),
-            Self::Loc => write!(f, "__loc__"),
-            Self::Op(op) => write!(f, "{op}"),
-            Self::Dot => write!(f, "."),
-            Self::Recr => write!(f, ".."),
-            Self::LPar => write!(f, "("),
-            Self::RPar => write!(f, ")"),
-            Self::LBrack => write!(f, "["),
-            Self::RBrack => write!(f, "]"),
-            Self::LBrace => write!(f, "{{"),
-            Self::RBrace => write!(f, "}}"),
-            Self::Colon => write!(f, ":"),
-            Self::Semicolon => write!(f, ";"),
-            Self::Var => write!(f, "$"),
-            Self::Quote => write!(f, "\""),
-            Self::Id(s) => write!(f, "{s}"),
-            Self::Field(s) => write!(f, ".{s}"),
-            Self::Format(s) => write!(f, "@{s}"),
-            Self::_Comment => write!(f, ""),
-            Self::_Newline => write!(f, r#"\n"#),
-            Self::_Tab => write!(f, r#"\t"#),
-            Self::EOF => write!(f, "<EOF>"),
-        }
-    }
-}
-impl std::fmt::Display for FilterStringToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Quote => write!(f, "\""),
-            Self::String(s) => write!(f, "{s}"),
-            Self::Escaped(c) => write!(f, "\\{c}"),
-            Self::Interpolation => write!(f, "("),
-            Self::EOF => write!(f, "<EOF>"),
-        }?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

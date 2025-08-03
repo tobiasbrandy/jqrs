@@ -1,6 +1,8 @@
 use core::f32;
 use std::{
-    cmp::Ordering, ops::{Add, Div, Mul, Neg, Sub}, str::FromStr
+    cmp::Ordering,
+    ops::{Add, Div, Mul, Neg, Sub},
+    str::FromStr,
 };
 
 use rug::{float::ParseFloatError, ops::CompleteRound, Float, Integer};
@@ -33,9 +35,7 @@ impl Number {
     pub fn to_usize(&self, round: rug::float::Round) -> Option<usize> {
         match self {
             Number::Int(i) => i.to_usize(),
-            Number::Decimal(f) => f
-                .to_integer_round(round)
-                .and_then(|(i, _)| i.to_usize()),
+            Number::Decimal(f) => f.to_integer_round(round).and_then(|(i, _)| i.to_usize()),
         }
     }
 
@@ -125,7 +125,7 @@ impl Ord for Number {
             (true, true) => return Ordering::Equal,
             (true, false) => return Ordering::Less,
             (false, true) => return Ordering::Greater,
-            (false, false) => {},
+            (false, false) => {}
         }
 
         let mret = match (self, other) {
@@ -137,7 +137,9 @@ impl Ord for Number {
 
         match mret {
             Some(ret) => ret,
-            None => unreachable!("NaN values were previously handled, so partial_cmp should never return None"),
+            None => unreachable!(
+                "NaN values were previously handled, so partial_cmp should never return None"
+            ),
         }
     }
 }
@@ -158,15 +160,9 @@ impl Add for &Number {
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Number::Int(a), Number::Int(b)) => Number::Int(a.clone() + b),
-            (Number::Decimal(a), Number::Decimal(b)) => {
-                Number::Decimal(a.clone() + b)
-            }
-            (Number::Int(a), Number::Decimal(b)) => {
-                Number::Decimal(a + b.clone())
-            }
-            (Number::Decimal(a), Number::Int(b)) => {
-                Number::Decimal(a.clone() + b)
-            }
+            (Number::Decimal(a), Number::Decimal(b)) => Number::Decimal(a.clone() + b),
+            (Number::Int(a), Number::Decimal(b)) => Number::Decimal(a + b.clone()),
+            (Number::Decimal(a), Number::Int(b)) => Number::Decimal(a.clone() + b),
         }
     }
 }
@@ -176,15 +172,9 @@ impl Sub for &Number {
     fn sub(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Number::Int(a), Number::Int(b)) => Number::Int(a.clone() - b),
-            (Number::Decimal(a), Number::Decimal(b)) => {
-                Number::Decimal(a.clone() - b)
-            }
-            (Number::Int(a), Number::Decimal(b)) => {
-                Number::Decimal(a - b.clone())
-            }
-            (Number::Decimal(a), Number::Int(b)) => {
-                Number::Decimal(a.clone() - b)
-            }
+            (Number::Decimal(a), Number::Decimal(b)) => Number::Decimal(a.clone() - b),
+            (Number::Int(a), Number::Decimal(b)) => Number::Decimal(a - b.clone()),
+            (Number::Decimal(a), Number::Int(b)) => Number::Decimal(a.clone() - b),
         }
     }
 }
@@ -194,15 +184,9 @@ impl Mul for &Number {
     fn mul(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Number::Int(a), Number::Int(b)) => Number::Int(a.clone() * b),
-            (Number::Decimal(a), Number::Decimal(b)) => {
-                Number::Decimal(a.clone() * b)
-            }
-            (Number::Int(a), Number::Decimal(b)) => {
-                Number::Decimal(a * b.clone())
-            }
-            (Number::Decimal(a), Number::Int(b)) => {
-                Number::Decimal(a.clone() * b)
-            }
+            (Number::Decimal(a), Number::Decimal(b)) => Number::Decimal(a.clone() * b),
+            (Number::Int(a), Number::Decimal(b)) => Number::Decimal(a * b.clone()),
+            (Number::Decimal(a), Number::Int(b)) => Number::Decimal(a.clone() * b),
         }
     }
 }
@@ -218,15 +202,9 @@ impl Div for &Number {
                     Number::Decimal(Float::with_val(PRECISION, a) / b)
                 }
             }
-            (Number::Decimal(a), Number::Decimal(b)) => {
-                Number::Decimal(a.clone() / b)
-            }
-            (Number::Int(a), Number::Decimal(b)) => {
-                Number::Decimal(a / b.clone())
-            }
-            (Number::Decimal(a), Number::Int(b)) => {
-                Number::Decimal(a.clone() / b)
-            }
+            (Number::Decimal(a), Number::Decimal(b)) => Number::Decimal(a.clone() / b),
+            (Number::Int(a), Number::Decimal(b)) => Number::Decimal(a / b.clone()),
+            (Number::Decimal(a), Number::Int(b)) => Number::Decimal(a.clone() / b),
         }
     }
 }

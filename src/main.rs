@@ -14,14 +14,13 @@ use jqrs::{
 
 use crate::options::{FilterSource, InputSource, JqOptions};
 
-fn process_parser_error(parser: &JsonParser, err: JsonParserError) -> ! {
+fn process_parser_error(parser: &JsonParser, err: JsonParserError) {
     let ParserPos { line, column } = parser.pos();
     if let JsonParserError::LexError(err) = err {
         println!("lexing error: {err} at line {line}, column {column}");
     } else {
         println!("parsing error: {err} at line {line}, column {column}");
     }
-    std::process::exit(1)
 }
 
 fn process_json(_options: &JqOptions, ctx: &filter::run::RunCtx, filter: &Filter, json: Json) {
@@ -72,7 +71,10 @@ fn main() -> ExitCode {
             while let Some(json) = parser.next() {
                 match json {
                     Ok(json) => process_json(&options, &ctx, &filter, json),
-                    Err(err) => process_parser_error(&parser, err),
+                    Err(err) => {
+                        process_parser_error(&parser, err);
+                        std::process::exit(1)
+                    }
                 }
             }
         }
@@ -84,7 +86,10 @@ fn main() -> ExitCode {
                         while let Some(json) = parser.next() {
                             match json {
                                 Ok(json) => process_json(&options, &ctx, &filter, json),
-                                Err(err) => process_parser_error(&parser, err),
+                                Err(err) => {
+                                    process_parser_error(&parser, err);
+                                    std::process::exit(1)
+                                }
                             }
                         }
                     }

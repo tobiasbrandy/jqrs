@@ -13,6 +13,7 @@ use super::{
     Json,
 };
 
+use thiserror::Error;
 use JsonToken as JT;
 
 pub struct JsonParser<'a>(Parser<'a, JsonToken, JsonParserError>);
@@ -47,94 +48,28 @@ impl Iterator for JsonParser<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum JsonParserError {
-    LexError(JsonLexError),
-    StringParserError(JsonStringParserError),
+    #[error(transparent)]
+    LexError(#[from] JsonLexError),
+    #[error(transparent)]
+    ExpectationFailed(#[from] ExpectationFailed<JsonToken>),
+    #[error(transparent)]
+    StringParserError(#[from] JsonStringParserError),
+    #[error("expected number got {0}")]
     ExpectedNumber(JsonToken),
-    UnmatchedExpectation(JsonToken, JsonToken), // expected, actual
+    #[error("unexpected token {0}")]
     UnexpectedToken(JsonToken),
 }
-impl std::fmt::Display for JsonParserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LexError(err) => write!(f, "{err}"),
-            Self::StringParserError(err) => write!(f, "error parsing string: {err}"),
-            Self::ExpectedNumber(tok) => write!(f, "expected number got {tok}"),
-            Self::UnmatchedExpectation(expected, actual) => {
-                write!(f, "expected {expected} got {actual}")
-            }
-            Self::UnexpectedToken(tok) => write!(f, "unexpected token {tok}"),
-        }
-    }
-}
-impl std::error::Error for JsonParserError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::LexError(err) => Some(err),
-            Self::StringParserError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-impl From<JsonLexError> for JsonParserError {
-    fn from(err: JsonLexError) -> Self {
-        Self::LexError(err)
-    }
-}
-impl From<ExpectationFailed<'_, JsonToken>> for JsonParserError {
-    fn from(
-        ExpectationFailed {
-            expected, actual, ..
-        }: ExpectationFailed<'_, JsonToken>,
-    ) -> Self {
-        Self::UnmatchedExpectation(expected, actual)
-    }
-}
-impl From<JsonStringParserError> for JsonParserError {
-    fn from(err: JsonStringParserError) -> Self {
-        Self::StringParserError(err)
-    }
-}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum JsonStringParserError {
-    LexError(JsonLexError),
-    UnmatchedExpectation(JsonStringToken, JsonStringToken), // expected, actual
+    #[error(transparent)]
+    LexError(#[from] JsonLexError),
+    #[error(transparent)]
+    ExpectationFailed(#[from] ExpectationFailed<JsonStringToken>),
+    #[error("unexpected token {0}")]
     UnexpectedToken(JsonStringToken),
-}
-impl std::fmt::Display for JsonStringParserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LexError(err) => write!(f, "{err}"),
-            Self::UnmatchedExpectation(expected, actual) => {
-                write!(f, "expected {expected} got {actual}")
-            }
-            Self::UnexpectedToken(tok) => write!(f, "Unexpected token {tok}"),
-        }
-    }
-}
-impl std::error::Error for JsonStringParserError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::LexError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-impl From<JsonLexError> for JsonStringParserError {
-    fn from(err: JsonLexError) -> Self {
-        Self::LexError(err)
-    }
-}
-impl From<ExpectationFailed<'_, JsonStringToken>> for JsonStringParserError {
-    fn from(
-        ExpectationFailed {
-            expected, actual, ..
-        }: ExpectationFailed<'_, JsonStringToken>,
-    ) -> Self {
-        Self::UnmatchedExpectation(expected, actual)
-    }
 }
 
 // Convinience type aliases

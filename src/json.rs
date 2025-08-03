@@ -110,6 +110,7 @@ impl Json {
         }
     }
 }
+// TODO: Actually follow display flags
 impl Debug for Json {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.format_pretty())

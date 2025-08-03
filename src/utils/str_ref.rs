@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use std::ops::Deref;
 use std::hash::Hash;
+use std::ops::Deref;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StrRef {

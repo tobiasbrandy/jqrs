@@ -1,4 +1,5 @@
 use logos::{Lexer, Logos};
+use thiserror::Error;
 
 use crate::lexer::{LexState, LexToken, LinePos};
 
@@ -18,7 +19,7 @@ pub struct Parser<'source, Token, Error>
 where
     Token: LexToken<'source>,
     Token::Extras: LexState,
-    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
+    Error: From<Token::Error> + From<ExpectationFailed<Token>>,
 {
     lexer: Lexer<'source, Token>,
     lookahead_tokens: Vec<Result<Token, Token::Error>>,
@@ -31,7 +32,7 @@ impl<'source, Token, Error> Parser<'source, Token, Error>
 where
     Token: LexToken<'source>,
     Token::Extras: LexState,
-    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
+    Error: From<Token::Error> + From<ExpectationFailed<Token>>,
 {
     const TAB_SIZE: usize = 8;
 
@@ -92,7 +93,7 @@ where
             self.close();
         }
 
-        Ok(next?)
+        next.map_err(|err| err.into())
     }
 
     pub fn push_token(&mut self, tok: Token) {
@@ -119,7 +120,7 @@ where
             .last()
             .unwrap()
             .as_ref()
-            .map_err(|err| Error::from(err.clone()))
+            .map_err(|err| err.clone().into())
     }
 
     pub fn morph<Token2, Error2>(&mut self) -> Parser<'source, Token2, Error2>
@@ -128,7 +129,7 @@ where
         Token2::Extras: LexState,
         Token2: Logos<'source, Source = Token::Source>,
         Token::Extras: Into<Token2::Extras>,
-        Error2: From<Token2::Error> + From<ExpectationFailed<'source, Token2>>,
+        Error2: From<Token2::Error> + From<ExpectationFailed<Token2>>,
     {
         debug_assert!(self.lookahead_tokens.is_empty());
 
@@ -150,7 +151,7 @@ where
         Token2::Extras: LexState,
         Token2: Logos<'source, Source = Token::Source>,
         Token::Extras: Into<Token2::Extras>,
-        Error2: From<Token2::Error> + From<ExpectationFailed<'source, Token2>>,
+        Error2: From<Token2::Error> + From<ExpectationFailed<Token2>>,
     {
         debug_assert!(self.lookahead_tokens.is_empty());
 
@@ -168,11 +169,7 @@ where
     pub fn expect_token(&mut self, expected: Token) -> Result<(), Error> {
         let actual = self.pop_token()?;
         if expected != actual {
-            Err(Error::from(ExpectationFailed {
-                expected,
-                actual,
-                _boo: std::marker::PhantomData,
-            }))
+            Err(ExpectationFailed { expected, actual }.into())
         } else {
             Ok(())
         }
@@ -195,21 +192,18 @@ where
     }
 }
 
-pub struct ExpectationFailed<'a, Token>
-where
-    Token: LexToken<'a>,
-    Token::Extras: LexState,
-{
+#[derive(Debug, Clone, PartialEq, Error)]
+#[error("expected {expected} got {actual}")]
+pub struct ExpectationFailed<Token> {
     pub expected: Token,
     pub actual: Token,
-    _boo: std::marker::PhantomData<&'a ()>,
 }
 
 pub struct ParseSequenceIter<'iter, 'source, Token, Element, Error>
 where
     Token: LexToken<'source>,
     Token::Extras: LexState,
-    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
+    Error: From<Token::Error> + From<ExpectationFailed<Token>>,
 {
     parser: &'iter mut Parser<'source, Token, Error>,
     separator: Token,
@@ -223,7 +217,7 @@ impl<'source, Token, Element, Error> Iterator
 where
     Token: LexToken<'source>,
     Token::Extras: LexState,
-    Error: From<Token::Error> + From<ExpectationFailed<'source, Token>>,
+    Error: From<Token::Error> + From<ExpectationFailed<Token>>,
 {
     type Item = Result<Element, Error>;
 

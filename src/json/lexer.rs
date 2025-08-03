@@ -1,162 +1,130 @@
+use derive_more::Display;
 use logos::Logos;
 use rug::float::ParseFloatError;
+use thiserror::Error;
 
 use crate::{
     lexer::{parse, parse_escaped, register_newline, register_tab, LexSource, LinePos},
     math::Number,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Error)]
 pub enum JsonLexError {
-    NumberParseError(ParseFloatError),
+    #[error(transparent)]
+    NumberParseError(#[from] ParseFloatError),
+    #[error("invalid escape sequence {0}")]
     InvalidEscapeSeq(String),
     #[default]
+    #[error("invalid token")]
     InvalidToken,
 }
-impl std::fmt::Display for JsonLexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NumberParseError(err) => write!(f, "{err}"),
-            Self::InvalidEscapeSeq(s) => write!(f, "invalid escape sequence {s}"),
-            Self::InvalidToken => write!(f, "invalid token"),
-        }
-    }
-}
-impl std::error::Error for JsonLexError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::NumberParseError(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-impl From<ParseFloatError> for JsonLexError {
-    fn from(err: ParseFloatError) -> Self {
-        Self::NumberParseError(err)
-    }
-}
 
-#[derive(Logos, Debug, Clone, PartialEq, Default)]
+#[derive(Logos, Debug, Clone, PartialEq, Default, Display)]
 #[logos(extras = LinePos)]
 #[logos(error = JsonLexError)]
 #[logos(source = LexSource<'s>)]
 #[logos(skip r"[\ \f\v\r\uFEFF]+")]
 pub enum JsonToken {
     // Parsed using JsonStringToken
+    #[display("\"{_0}\"")]
     Str(String),
 
     #[regex(r#"[\+\-]?([0-9]+\.?|[0-9]*\.[0-9]+)([eE][\+\-]?[0-9]+)?"#, parse)]
+    #[display("{_0}")]
     Num(Number),
 
     #[token("true")]
+    #[display("true")]
     True,
 
     #[token("false")]
+    #[display("false")]
     False,
 
     #[token("null")]
+    #[display("null")]
     Null,
 
     // Special nums
     #[regex(r"[\+\-]?[Nn]a[Nn]")]
+    #[display("NaN")]
     NaN,
 
     #[regex(r"\-[Ii]nfinity")]
+    #[display("+Infinity")]
     InfP,
 
     #[regex(r"\+?[Ii]nfinity")]
+    #[display("-Infinity")]
     InfM,
 
     // Array
     #[token("[")]
+    #[display("[")]
     LBrack,
 
     #[token("]")]
+    #[display("]")]
     RBrack,
 
     #[token(",")]
+    #[display(",")]
     Comma,
 
     // Object
     #[token("{")]
+    #[display("{{")]
     LBrace,
 
     #[token("}")]
+    #[display("}}")]
     RBrace,
 
     #[token(":")]
+    #[display(":")]
     KVDelim,
 
     // String
     #[token("\"")]
+    #[display("\"")]
     Quote,
 
     // Control
     #[token("\n", register_newline)]
+    #[display(r#"\n"#)]
     _Newline,
 
     #[token("\t", register_tab)]
+    #[display(r#"\t"#)]
     _Tab,
 
-    #[allow(clippy::upper_case_acronyms)]
     #[default]
+    #[display("<EOF>")]
+    #[allow(clippy::upper_case_acronyms)]
     EOF,
 }
 
-#[derive(Logos, Debug, Clone, PartialEq, Default)]
+#[derive(Logos, Debug, Clone, PartialEq, Default, Display)]
 #[logos(extras = LinePos)]
 #[logos(error = JsonLexError)]
 #[logos(source = LexSource<'s>)]
 pub enum JsonStringToken {
     #[token("\"")]
+    #[display("\"")]
     Quote,
 
     #[regex(r#"[^\"\\\x00-\x1F\x7F]+"#, |lex| lex.slice().to_string())]
+    #[display("{_0}")]
     String(String),
 
     #[regex(r#"\\([\"\\\/bfnrt]|u[a-fA-F0-9]{4})"#, |lex| parse_escaped(&lex.slice()).map_err(JsonLexError::InvalidEscapeSeq))]
+    #[display("\\{_0}")]
     Escaped(char),
 
-    #[allow(clippy::upper_case_acronyms)]
     #[default]
+    #[display("<EOF>")]
+    #[allow(clippy::upper_case_acronyms)]
     EOF,
-}
-
-impl std::fmt::Display for JsonToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Str(s) => write!(f, "\"{s}\""),
-            Self::Num(n) => write!(f, "{n}"),
-            Self::True => write!(f, "true"),
-            Self::False => write!(f, "false"),
-            Self::Null => write!(f, "null"),
-            Self::NaN => write!(f, "NaN"),
-            Self::InfP => write!(f, "+Infinity"),
-            Self::InfM => write!(f, "-Infinity"),
-            Self::LBrack => write!(f, "["),
-            Self::RBrack => write!(f, "]"),
-            Self::Comma => write!(f, ","),
-            Self::LBrace => write!(f, "{{"),
-            Self::RBrace => write!(f, "}}"),
-            Self::KVDelim => write!(f, ":"),
-            Self::Quote => write!(f, "\""),
-            Self::_Newline => write!(f, r#"\n"#),
-            Self::_Tab => write!(f, r#"\t"#),
-            Self::EOF => write!(f, "<EOF>"),
-        }?;
-        Ok(())
-    }
-}
-impl std::fmt::Display for JsonStringToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Quote => write!(f, "\""),
-            Self::String(s) => write!(f, "{s}"),
-            Self::Escaped(c) => write!(f, "\\{c}"),
-            Self::EOF => write!(f, "<EOF>"),
-        }?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
