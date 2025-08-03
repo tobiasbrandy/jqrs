@@ -147,6 +147,7 @@ pub enum FilterSource {
 
 #[derive(Debug, Clone)]
 pub enum InputSource {
+    Null,               // Use `null` as the single input value
     Stdin,              // Input from stdin
     Files(Vec<String>), // Input from files
 }
@@ -154,7 +155,6 @@ pub enum InputSource {
 #[derive(Debug, Clone, Copy)]
 pub enum InputMode {
     Default,  // Default input mode
-    Null,     // Use `null` as the single input value
     Raw,      // Read each line as string instead of JSON
     Slurp,    // Read all inputs into an array and use it as the single input value
     RawSlurp, // Read all inputs into an array and use it as the single input value
@@ -350,7 +350,9 @@ impl JqOptions {
         }
 
         let input_source = {
-            if files.is_empty() {
+            if cli.null_input {
+                InputSource::Null
+            } else if files.is_empty() {
                 InputSource::Stdin
             } else {
                 InputSource::Files(files)
@@ -358,9 +360,7 @@ impl JqOptions {
         };
 
         let input_mode = {
-            if cli.null_input {
-                InputMode::Null
-            } else if cli.raw_input && cli.slurp {
+            if cli.raw_input && cli.slurp {
                 InputMode::RawSlurp
             } else if cli.raw_input {
                 InputMode::Raw
