@@ -5,7 +5,7 @@ use clap::{
     CommandFactory, FromArgMatches, Parser,
 };
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, PartialEq, Eq)]
 #[command(name = crate_name!())]
 #[command(version = crate_version!())]
 #[command(author = crate_authors!())]
@@ -138,21 +138,21 @@ struct Cli {
     pos_args: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FilterSource {
     Identity,        // Default filter
     Literal(String), // Filter comes from literal string
     File(String),    // Filter comes from file
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputSource {
     Null,               // Use `null` as the single input value
     Stdin,              // Input from stdin
     Files(Vec<String>), // Input from files
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Default,  // Default input mode
     Raw,      // Read each line as string instead of JSON
@@ -160,7 +160,7 @@ pub enum InputMode {
     RawSlurp, // Read all inputs into an array and use it as the single input value
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Default, // Normal JSON output
     Raw,     // Raw output with newlines
@@ -168,14 +168,14 @@ pub enum OutputMode {
     Join,    // Raw output without newlines
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     Auto,   // Based on terminal detection
     Always, // Force colors
     Never,  // No colors
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndentMode {
     Default,    // Use default indentation
     Compact,    // Compact output

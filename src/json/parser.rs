@@ -36,8 +36,18 @@ impl<'a> JsonParser<'a> {
         Some(ret)
     }
 
+    pub fn parse_raw_string(&mut self) -> Result<String, JsonParserError> {
+        let str = RawString(&mut self.0)?;
+        self.0.close();
+        Ok(str)
+    }
+
     pub fn pos(&self) -> &ParserPos {
         self.0.pos()
+    }
+
+    pub fn into_positioned(self) -> impl Iterator<Item = (ParserPos, Result<Json, JsonParserError>)> + 'a {
+        PositionedJsonIterator(self)
     }
 }
 impl Iterator for JsonParser<'_> {
@@ -45,6 +55,14 @@ impl Iterator for JsonParser<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parse_next()
+    }
+}
+
+struct PositionedJsonIterator<'a>(JsonParser<'a>);
+impl Iterator for PositionedJsonIterator<'_> {
+    type Item = (ParserPos, Result<Json, JsonParserError>);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|res| (*self.0.pos(), res))
     }
 }
 
@@ -139,6 +157,26 @@ fn String(parser: &mut JParser) -> JResult<String> {
             JsonStringToken::String(s) => str.push_str(&s),
             JsonStringToken::Escaped(c) => str.push(c),
             tok => return Err(JsonStringParserError::UnexpectedToken(tok).into()),
+        }
+    }
+
+    // Restore json parser
+    str_parser.morph_into(parser);
+
+    Ok(str)
+}
+
+fn RawString(parser: &mut JParser) -> JResult<String> {
+    // Morph json parser into string parser
+    let mut str_parser = parser.morph::<JsonStringToken, JsonStringParserError>();
+
+    let mut str = String::new();
+    loop {
+        match str_parser.pop_token()? {
+            JsonStringToken::Quote => str.push('"'),
+            JsonStringToken::String(s) => str.push_str(&s),
+            JsonStringToken::Escaped(c) => str.push(c),
+            JsonStringToken::EOF => break,
         }
     }
 
