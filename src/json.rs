@@ -69,7 +69,7 @@ pub enum Json {
     Null,
 }
 impl Json {
-    pub fn parser<'a>(source: &'a LexSource) -> parser::JsonParser<'a> {
+    pub fn parser(source: LexSource) -> parser::JsonParser {
         parser::JsonParser::new(source)
     }
 
@@ -122,15 +122,10 @@ impl Display for Json {
     }
 }
 impl FromStr for Json {
-    type Err = parser::JsonParserError;
+    type Err = (parser::ParserPos, parser::JsonParserError);
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match Json::parser(&LexSource::str(s)).parse_next() {
-            Some(ret) => ret,
-            None => Err(parser::JsonParserError::UnexpectedToken(
-                lexer::JsonToken::EOF,
-            )),
-        }
+        parser::parse_json(LexSource::str(s))
     }
 }
 impl Ord for Json {

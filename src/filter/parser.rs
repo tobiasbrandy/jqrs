@@ -2,10 +2,11 @@
 
 use std::sync::Arc;
 
+pub use crate::parser::ParserPos;
 use crate::{
     filter::lexer::Op,
     lexer::LexSource,
-    parser::{ExpectationFailed, Parser, ParserPos},
+    parser::{ExpectationFailed, Parser},
 };
 
 use super::{
@@ -16,35 +17,23 @@ use super::{
 use thiserror::Error;
 use FilterToken as FT;
 
-pub struct FilterParser<'a>(Parser<'a, FilterToken, FilterParserError>);
-impl<'a> FilterParser<'a> {
-    pub fn new(source: &'a LexSource) -> Self {
-        Self(Parser::new(source))
-    }
+pub fn parse_filter(source: LexSource) -> Result<Filter, (ParserPos, FilterParserError)> {
+    fn inner(
+        parser: &mut Parser<'_, FilterToken, FilterParserError>,
+    ) -> Result<Filter, FilterParserError> {
+        let filter = Filter(parser)?;
 
-    pub fn parse(&mut self) -> Result<Filter, FilterParserError> {
-        fn inner(
-            parser: &mut Parser<'_, FilterToken, FilterParserError>,
-        ) -> Result<Filter, FilterParserError> {
-            let filter = Filter(parser)?;
+        let next_tok = parser.pop_token()?;
 
-            let next_tok = parser.pop_token()?;
-
-            if !matches!(next_tok, FT::EOF) {
-                return Err(FilterParserError::UnexpectedToken(next_tok));
-            }
-
-            Ok(filter)
+        if !matches!(next_tok, FT::EOF) {
+            return Err(FilterParserError::UnexpectedToken(next_tok));
         }
 
-        let ret = inner(&mut self.0);
-        self.0.close();
-        ret
+        Ok(filter)
     }
 
-    pub fn pos(&self) -> &ParserPos {
-        self.0.pos()
-    }
+    let mut parser = Parser::new(&source);
+    inner(&mut parser).map_err(|err| (parser.pos(), err))
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -972,13 +961,11 @@ mod tests {
     #[test]
     fn test_parsing() {
         let source = LexSource::str(FILTERS);
-        let mut parser = FilterParser::new(&source);
-        match parser.parse() {
+        match parse_filter(source) {
             Ok(filter) => {
                 println!("{filter}");
             }
-            Err(err) => {
-                let ParserPos { line, column } = parser.pos();
+            Err((ParserPos { line, column }, err)) => {
                 if let FilterParserError::LexError(err) = err {
                     println!("lexing error: {err} at line {line}, column {column}");
                 } else {
@@ -991,9 +978,9 @@ mod tests {
     #[test]
     fn test_lexing() {
         let source = LexSource::str(FILTERS);
-        let mut parser = FilterParser::new(&source).0;
+        let mut parser = Parser::<FilterToken, FilterParserError>::new(&source);
 
-        let mut pos = *parser.pos();
+        let mut pos = parser.pos();
         loop {
             let tok = parser.pop_token();
             if matches!(tok, Ok(FT::EOF)) {
@@ -1002,7 +989,7 @@ mod tests {
 
             println!("{pos:?}");
             println!("{tok:?}");
-            pos = *parser.pos();
+            pos = parser.pos();
         }
     }
 }

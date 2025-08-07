@@ -7,9 +7,9 @@ pub mod options;
 
 use auto_enums::enum_derive;
 use jqrs::{
-    filter::{self, Filter},
+    filter::{self, parser::FilterParserError, Filter},
     json::{
-        parser::{JsonParser, JsonParserError},
+        parser::{parse_raw_json_string, JsonParserError},
         Json,
     },
     lexer::LexSource,
@@ -24,7 +24,12 @@ fn write_io_error(err: &std::io::Error) {
     eprintln!("{CRATE_NAME}: error: {err}");
 }
 
-fn write_parser_error(err: &JsonParserError, pos: &ParserPos) {
+fn write_filter_parser_error(pos: &ParserPos, err: &FilterParserError) {
+    let ParserPos { line, column } = pos;
+    eprintln!("{CRATE_NAME}: error: syntax error: {err}, line {line}, column {column}");
+}
+
+fn write_json_parser_error(pos: &ParserPos, err: &JsonParserError) {
     let ParserPos { line, column } = pos;
     if let JsonParserError::LexError(err) = err {
         eprintln!("{CRATE_NAME}: lexing error: {err} at line {line}, column {column}");
@@ -33,7 +38,11 @@ fn write_parser_error(err: &JsonParserError, pos: &ParserPos) {
     }
 }
 
-fn process_json(ctx: &filter::run::RunCtx, filter: &Filter, json: Result<Json, JsonParserError>) {
+fn process_json(
+    ctx: &filter::run::RunCtx,
+    filter: &Filter,
+    json: Result<Json, (ParserPos, JsonParserError)>,
+) {
     match json {
         Ok(json) => {
             let mut results = filter.run(ctx, &json);
@@ -48,7 +57,7 @@ fn process_json(ctx: &filter::run::RunCtx, filter: &Filter, json: Result<Json, J
                 };
             }
         }
-        Err(err) => write_parser_error(&err, &ParserPos::default()),
+        Err((pos, err)) => write_json_parser_error(&pos, &err),
     }
 }
 
@@ -94,20 +103,29 @@ fn main() -> ExitCode {
 
     let filter = match &options.filter_source {
         FilterSource::Identity => Filter::Identity,
-        FilterSource::Literal(filter) => filter.parse().unwrap_or_else(|err| {
-            println!("error parsing filter: {err}");
-            std::process::exit(1)
-        }),
-        FilterSource::File(path) => std::fs::read_to_string(path)
-            .unwrap_or_else(|err| {
-                println!("error parsing filter: {err}");
-                std::process::exit(1)
-            })
-            .parse()
-            .unwrap_or_else(|err| {
-                println!("error parsing filter: {err}");
-                std::process::exit(1)
-            }),
+        FilterSource::Literal(filter) => match filter.parse() {
+            Ok(filter) => filter,
+            Err((pos, err)) => {
+                write_filter_parser_error(&pos, &err);
+                return ExitCode::FAILURE;
+            }
+        },
+        FilterSource::File(path) => {
+            let content = match std::fs::read_to_string(path) {
+                Ok(content) => content,
+                Err(err) => {
+                    write_io_error(&err);
+                    return ExitCode::FAILURE;
+                }
+            };
+            match content.parse() {
+                Ok(filter) => filter,
+                Err((pos, err)) => {
+                    write_filter_parser_error(&pos, &err);
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
     };
 
     let ctx = filter::run::RunCtx::new();
@@ -123,40 +141,23 @@ fn main() -> ExitCode {
 
     match &options.input_mode {
         InputMode::Default => {
-            for read_source in read_sources {
-                match read_source.to_lex_source() {
-                    Ok(source) => {
-                        let parser = JsonParser::new(&source);
-                        for json in parser {
-                            process_json(&ctx, &filter, json);
-                        }
-                    }
-                    Err(err) => write_io_error(&err),
-                }
-            }
+            read_sources
+                .iter()
+                .map(|read_source| read_source.to_lex_source())
+                .filter_map(|result| result.inspect_err(write_io_error).ok())
+                .flat_map(|source| Json::parser(source))
+                .for_each(|json| process_json(&ctx, &filter, json))
         }
         InputMode::Slurp => {
-            fn parse_items(read_sources: &[ReadSource]) -> Result<Json, JsonParserError> {
-                let mut items = Vec::new();
+            let json = read_sources
+                .iter()
+                .map(|read_source| read_source.to_lex_source())
+                .filter_map(|result| result.inspect_err(write_io_error).ok())
+                .flat_map(|source| Json::parser(source))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Json::Array);
 
-                for read_source in read_sources {
-                    match read_source.to_lex_source() {
-                        Ok(source) => {
-                            for json in JsonParser::new(&source) {
-                                match json {
-                                    Ok(json) => items.push(json),
-                                    Err(err) => return Err(err),
-                                }
-                            }
-                        }
-                        Err(err) => write_io_error(&err),
-                    }
-                }
-
-                Ok(Json::Array(items))
-            }
-
-            process_json(&ctx, &filter, parse_items(&read_sources));
+            process_json(&ctx, &filter, json)
         }
         InputMode::Raw => {
             let json = read_sources
@@ -168,15 +169,13 @@ fn main() -> ExitCode {
                         .lines()
                         .filter_map(|result| result.inspect_err(write_io_error).ok())
                         .map(|line| {
-                            JsonParser::new(&LexSource::String(line))
-                                .parse_raw_string()
-                                .map(Json::String)
+                            parse_raw_json_string(LexSource::String(line)).map(Json::String)
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map(Json::Array);
 
-            process_json(&ctx, &filter, json);
+            process_json(&ctx, &filter, json)
         }
         InputMode::RawSlurp => {
             let mut raw_string = String::new();
@@ -186,11 +185,9 @@ fn main() -> ExitCode {
                 }
             }
 
-            let json = JsonParser::new(&LexSource::String(raw_string))
-                .parse_raw_string()
-                .map(Json::String);
+            let json = parse_raw_json_string(LexSource::String(raw_string)).map(Json::String);
 
-            process_json(&ctx, &filter, json);
+            process_json(&ctx, &filter, json)
         }
     }
 

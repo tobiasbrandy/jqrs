@@ -117,6 +117,7 @@ impl Deref for LexSourceRef<'_> {
 }
 
 // All sources types used in jqrs
+#[derive(Debug)]
 pub enum LexSource<'source> {
     File(LazyReaderSource<File>),
     Stdin(LazyReaderSource<Stdin>),
@@ -197,6 +198,9 @@ impl Source for LexSource<'_> {
 }
 
 // ---------------------- LazyReaderSource ---------------------- //
+// TODO: Move to a separate file and add documentation, specially about the unsafe usage:
+// - Tokens must be owned
+// - Cannot be used by more than one logos
 
 #[derive(Debug)]
 pub struct LazyReaderSourceRef<'a, T: ?Sized>(Ref<'a, T>);
@@ -214,6 +218,7 @@ impl<T: ?Sized + PartialEq> PartialEq for LazyReaderSourceRef<'_, T> {
 }
 impl<T: ?Sized + Eq> Eq for LazyReaderSourceRef<'_, T> {}
 
+#[derive(Debug, Clone)]
 struct LazyReaderSourceState<R: Read> {
     reader: R,
     buffer: Vec<u8>,
@@ -224,6 +229,7 @@ struct LazyReaderSourceState<R: Read> {
     error: bool,
 }
 
+#[derive(Debug, Clone)]
 pub struct LazyReaderSource<R: Read>(RefCell<LazyReaderSourceState<R>>);
 impl LazyReaderSource<File> {
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
@@ -285,6 +291,7 @@ impl<R: Read> LazyReaderSource<R> {
             Range { start, end }: Range<usize>,
         ) -> io::Result<bool> {
             // We can't backtrack
+            // TODO: Add backtracking support
             assert!(start >= state.start_offset);
 
             let buf_len = state.buffer.len();
@@ -345,7 +352,7 @@ impl<R: Read> LazyReaderSource<R> {
         }
     }
 
-    pub fn slice_bytes(&self, range: Range<usize>) -> Option<LazyReaderSourceRef<'_, [u8]>> {
+    fn slice_bytes(&self, range: Range<usize>) -> Option<LazyReaderSourceRef<'_, [u8]>> {
         let real_range = {
             let state = &mut *self.0.borrow_mut();
 

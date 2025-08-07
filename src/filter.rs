@@ -180,9 +180,9 @@ impl std::fmt::Display for Filter {
     }
 }
 impl FromStr for Filter {
-    type Err = parser::FilterParserError;
+    type Err = (parser::ParserPos, parser::FilterParserError);
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parser::FilterParser::new(&LexSource::str(s)).parse()
+        parser::parse_filter(LexSource::str(s))
     }
 }

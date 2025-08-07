@@ -58,8 +58,8 @@ where
         self.lookahead_tokens.push(Ok(Token::default()));
     }
 
-    pub fn pos(&self) -> &ParserPos {
-        &self.pos
+    pub fn pos(&self) -> ParserPos {
+        self.pos
     }
 
     fn update_pos(&mut self) {

@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
+pub use crate::parser::ParserPos;
 use crate::{
     lexer::LexSource,
     math::Number,
-    parser::{ExpectationFailed, Parser, ParserPos},
+    parser::{ExpectationFailed, Parser},
 };
 
 use super::{
@@ -13,56 +14,72 @@ use super::{
     Json,
 };
 
+use self_cell::self_cell;
+
 use thiserror::Error;
 use JsonToken as JT;
 
-pub struct JsonParser<'a>(Parser<'a, JsonToken, JsonParserError>);
+pub fn parse_json(source: LexSource) -> Result<Json, (ParserPos, JsonParserError)> {
+    fn inner(parser: &mut Parser<'_, JsonToken, JsonParserError>) -> Result<Json, JsonParserError> {
+        let json = Json(parser)?;
+
+        let next_tok = parser.pop_token()?;
+
+        if !matches!(next_tok, JT::EOF) {
+            return Err(JsonParserError::UnexpectedToken(next_tok));
+        }
+
+        Ok(json)
+    }
+
+    let mut parser = Parser::new(&source);
+    inner(&mut parser).map_err(|err| (parser.pos(), err))
+}
+
+pub fn parse_raw_json_string<'a>(source: LexSource<'a>) -> Result<String, (ParserPos, JsonParserError)> {
+    let mut parser = Parser::new(&source);
+    let str = RawString(&mut parser).map_err(|err| (parser.pos(), err))?;
+    Ok(str)
+}
+
+type JsonParserInnerDependant<'a> = Parser<'a, JsonToken, JsonParserError>;
+self_cell!(
+    struct JsonParserInner<'a> {
+        owner: LexSource<'a>,
+
+        #[not_covariant]
+        dependent: JsonParserInnerDependant,
+    }
+);
+pub struct JsonParser<'a>(JsonParserInner<'a>);
 impl<'a> JsonParser<'a> {
-    pub fn new(source: &'a LexSource) -> Self {
-        Self(Parser::new(source))
+    pub fn new(source: LexSource<'a>) -> Self {
+        Self(JsonParserInner::new(source, |source_ref| {
+            Parser::new(source_ref)
+        }))
     }
 
-    pub fn parse_next(&mut self) -> Option<Result<Json, JsonParserError>> {
-        if let Ok(JT::EOF) = self.0.peek_token() {
-            return None;
-        }
-
-        let ret = Json(&mut self.0);
-        if ret.is_err() {
-            // On error, we cannot continue parsing
-            self.0.close();
-        }
-
-        Some(ret)
-    }
-
-    pub fn parse_raw_string(&mut self) -> Result<String, JsonParserError> {
-        let str = RawString(&mut self.0)?;
-        self.0.close();
-        Ok(str)
-    }
-
-    pub fn pos(&self) -> &ParserPos {
-        self.0.pos()
-    }
-
-    pub fn into_positioned(self) -> impl Iterator<Item = (ParserPos, Result<Json, JsonParserError>)> + 'a {
-        PositionedJsonIterator(self)
+    pub fn parse_next(&mut self) -> Option<Result<Json, (ParserPos, JsonParserError)>> {
+        self.0.with_dependent_mut(|_source, parser| {
+            if let Ok(JT::EOF) = parser.peek_token() {
+                return None;
+            }
+    
+            let ret = Json(parser).map_err(|err| (parser.pos(), err));
+            if ret.is_err() {
+                // On error, we cannot continue parsing
+                parser.close();
+            }
+    
+            Some(ret)
+        })
     }
 }
 impl Iterator for JsonParser<'_> {
-    type Item = Result<Json, JsonParserError>;
+    type Item = Result<Json, (ParserPos, JsonParserError)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parse_next()
-    }
-}
-
-struct PositionedJsonIterator<'a>(JsonParser<'a>);
-impl Iterator for PositionedJsonIterator<'_> {
-    type Item = (ParserPos, Result<Json, JsonParserError>);
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|res| (*self.0.pos(), res))
     }
 }
 
@@ -228,15 +245,12 @@ mod tests {
 
     #[test]
     fn test_parsing() {
-        let source = LexSource::str(JSONS);
-        let mut parser = JsonParser::new(&source);
-        while let Some(json) = parser.next() {
+        for json in JsonParser::new(LexSource::str(JSONS)) {
             match json {
                 Ok(json) => {
                     println!("{json:?}");
                 }
-                Err(err) => {
-                    let ParserPos { line, column } = parser.pos();
+                Err((ParserPos { line, column }, err)) => {
                     if let JsonParserError::LexError(err) = err {
                         println!("lexing error: {err} at line {line}, column {column}");
                     } else {
@@ -250,9 +264,9 @@ mod tests {
     #[test]
     fn test_lexing() {
         let source = LexSource::str(JSONS);
-        let mut parser = JsonParser::new(&source).0;
+        let mut parser = Parser::<JsonToken, JsonParserError>::new(&source);
 
-        let mut pos = *parser.pos();
+        let mut pos = parser.pos();
         loop {
             let tok = parser.pop_token();
             if matches!(tok, Ok(JT::EOF)) {
@@ -261,7 +275,7 @@ mod tests {
 
             println!("{pos:?}");
             println!("{tok:?}");
-            pos = *parser.pos();
+            pos = parser.pos();
         }
     }
 }
