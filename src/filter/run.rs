@@ -1,5 +1,5 @@
 mod builtins;
-mod gen;
+mod run_gen;
 
 use std::{
     cell::RefCell,
@@ -14,8 +14,8 @@ use crate::{json::Json, math::Number};
 
 use super::{Filter, FuncParam};
 
-pub use gen::RunGen;
-use gen::{yield_, RunOut};
+pub use run_gen::RunGen;
+use run_gen::{yield_, RunOut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEndValue {

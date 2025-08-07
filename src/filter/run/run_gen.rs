@@ -1,15 +1,15 @@
 use std::future::Future;
 
 use genawaiter::{
-    stack::{Co, Gen, Shelf},
     GeneratorState,
+    stack::{Co, Gen, Shelf},
 };
 
 use ouroboros::self_referencing;
 
 use crate::{filter::Filter, json::Json};
 
-use super::{run, RunCtx, RunEnd};
+use super::{RunCtx, RunEnd, run};
 
 pub type RunOut<'a> = Co<'a, Json>;
 
@@ -25,7 +25,7 @@ struct InternalRunGen<'a> {
 
     #[borrows(mut shelf, ctx, filter, json)]
     #[not_covariant]
-    gen: Gen<'this, Json, (), RunGenFuture>,
+    run_gen: Gen<'this, Json, (), RunGenFuture>,
 }
 pub struct RunGen<'a> {
     inner: InternalRunGen<'a>,
@@ -34,9 +34,12 @@ pub struct RunGen<'a> {
 impl<'a> RunGen<'a> {
     pub fn build(ctx: &'a RunCtx, filter: &'a Filter, json: &'a Json) -> Self {
         unsafe fn to_static<'a, F: Future<Output = RunEnd> + 'a>(fut: F) -> RunGenFuture {
-            std::mem::transmute::<std::pin::Pin<Box<dyn Future<Output = RunEnd> + 'a>>, RunGenFuture>(
-                Box::pin(fut),
-            )
+            unsafe {
+                std::mem::transmute::<
+                    std::pin::Pin<Box<dyn Future<Output = RunEnd> + 'a>>,
+                    RunGenFuture,
+                >(Box::pin(fut))
+            }
         }
 
         Self {
@@ -55,7 +58,7 @@ impl<'a> RunGen<'a> {
                 //    During this time, all captured references ('a and 'this) are valid.
                 // 3. `ouroboros` ensures the structural integrity and necessary drop order.
                 // Thus, the "lie" of 'static is upheld for the actual duration the future is used.
-                gen_builder: |shelf, ctx, filter, json| unsafe {
+                run_gen_builder: |shelf, ctx, filter, json| unsafe {
                     Gen::new(shelf, |co| to_static(run(co, ctx, filter, json)))
                 },
             }
@@ -65,7 +68,7 @@ impl<'a> RunGen<'a> {
     }
 
     pub fn resume(&mut self) -> GeneratorState<Json, RunEnd> {
-        self.inner.with_gen_mut(|gen| gen.resume())
+        self.inner.with_run_gen_mut(|run_gen| run_gen.resume())
     }
 
     pub fn end(&mut self) -> RunEnd {
