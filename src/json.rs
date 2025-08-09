@@ -73,20 +73,20 @@ impl Json {
         parser::JsonParser::new(source)
     }
 
-    pub fn format(&self, format: Format) -> String {
-        format_json(self, format)
+    pub fn format(&self, fmt: &Format) -> String {
+        format_json(self, fmt)
     }
 
     pub fn format_compact(&self) -> String {
-        format_json(self, Format::COMPACT)
+        format_json(self, &Format::COMPACT)
     }
 
     pub fn format_pretty(&self) -> String {
-        format_json(self, Format::PRETTY)
+        format_json(self, &Format::PRETTY)
     }
 
     pub fn format_pretty_color(&self) -> String {
-        format_json(self, Format::pretty_color())
+        format_json(self, &Format::pretty_color())
     }
 
     pub fn to_bool(&self) -> bool {
@@ -122,7 +122,7 @@ impl Display for Json {
     }
 }
 impl FromStr for Json {
-    type Err = (parser::ParserPos, parser::JsonParserError);
+    type Err = parser::JsonParserError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parser::parse_json(LexSource::str(s))

@@ -27,8 +27,9 @@ pub type RunEnd = Option<RunEndValue>;
 
 pub type RunValue = Result<Json, RunEndValue>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 enum RunFile {
+    #[default]
     Main,
     Module(String),
 }
@@ -55,7 +56,7 @@ struct RunState {
     current_func: Option<(Arc<str>, usize, CurrentFuncDef)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunCtx {
     /// The jq file we are currently running
     file: RunFile,
@@ -65,11 +66,16 @@ pub struct RunCtx {
     state: RefCell<RunState>,
 }
 impl RunCtx {
-    pub fn new() -> Self {
+    pub fn new(vars: HashMap<Arc<str>, Json>) -> Self {
         Self {
             file: RunFile::Main,
             custom_builtins: None,
-            state: RefCell::new(RunState::default()),
+            state: RefCell::new(RunState {
+                vars,
+                funcs: HashMap::new(),
+                labels: HashSet::new(),
+                current_func: None,
+            }),
         }
     }
 
@@ -124,11 +130,6 @@ impl RunCtx {
 
     fn get_current_func(&self) -> Option<(Arc<str>, usize, CurrentFuncDef)> {
         self.state.borrow().current_func.clone()
-    }
-}
-impl Default for RunCtx {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1041,7 +1042,7 @@ mod test {
         let filter: Filter = filter.parse().expect("filter parse error");
         println!("{filter:?}");
 
-        let ctx = RunCtx::new();
+        let ctx = RunCtx::default();
         let mut run_gen = filter.run(&ctx, &input);
         for json in &mut run_gen {
             println!("{json:?}");

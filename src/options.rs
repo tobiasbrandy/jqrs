@@ -253,7 +253,7 @@ pub struct JqOptions {
 }
 
 impl JqOptions {
-    pub fn parse<I, T>(cli_args: I) -> Self
+    pub fn from_cli<I, T>(cli_args: I) -> Self
     where
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
@@ -479,7 +479,7 @@ mod test {
 
     #[test]
     fn test_parse() {
-        let options = JqOptions::parse(vec![
+        let options = JqOptions::from_cli(vec![
             "jqrs",
             "1",
             "2",

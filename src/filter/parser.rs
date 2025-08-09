@@ -10,34 +10,44 @@ use crate::{
 };
 
 use super::{
-    lexer::{FilterLexError, FilterStringToken, FilterToken},
     Filter, FuncParam,
+    lexer::{FilterLexError, FilterStringToken, FilterToken},
 };
 
-use thiserror::Error;
 use FilterToken as FT;
+use thiserror::Error;
 
-pub fn parse_filter(source: LexSource) -> Result<Filter, (ParserPos, FilterParserError)> {
+#[derive(Debug, Clone, PartialEq, Error)]
+#[error("{source}, line {}, column {}", .pos.line, .pos.column)]
+pub struct FilterParserError {
+    pub pos: ParserPos,
+    pub source: FilterParserErrorSource,
+}
+
+pub fn parse_filter(source: LexSource) -> Result<Filter, FilterParserError> {
     fn inner(
-        parser: &mut Parser<'_, FilterToken, FilterParserError>,
-    ) -> Result<Filter, FilterParserError> {
+        parser: &mut Parser<'_, FilterToken, FilterParserErrorSource>,
+    ) -> Result<Filter, FilterParserErrorSource> {
         let filter = Filter(parser)?;
 
         let next_tok = parser.pop_token()?;
 
         if !matches!(next_tok, FT::EOF) {
-            return Err(FilterParserError::UnexpectedToken(next_tok));
+            return Err(FilterParserErrorSource::UnexpectedToken(next_tok));
         }
 
         Ok(filter)
     }
 
     let mut parser = Parser::new(&source);
-    inner(&mut parser).map_err(|err| (parser.pos(), err))
+    inner(&mut parser).map_err(|source| FilterParserError {
+        pos: parser.pos(),
+        source,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
-pub enum FilterParserError {
+pub enum FilterParserErrorSource {
     #[error(transparent)]
     LexError(#[from] FilterLexError),
     #[error(transparent)]
@@ -63,6 +73,11 @@ pub enum FilterStringParserError {
     #[error("unexpected token {0}")]
     UnexpectedToken(FilterStringToken),
 }
+
+// Convinience type aliases
+type ParserError = FilterParserErrorSource;
+type FParser<'a> = Parser<'a, FilterToken, ParserError>;
+type FResult<T> = Result<T, ParserError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpAssoc {
@@ -100,10 +115,6 @@ fn op_prefix_precedence(op: &Op) -> u8 {
         _ => unreachable!(),
     }
 }
-
-// Convinience type aliases
-type FParser<'a> = Parser<'a, FilterToken, FilterParserError>;
-type FResult<T> = Result<T, FilterParserError>;
 
 /// Filter
 ///   : FuncDefs
@@ -148,7 +159,7 @@ fn FuncDef(parser: &mut FParser) -> FResult<(Arc<str>, Vec<FuncParam>, Filter)> 
 
     let name = match parser.pop_token()? {
         FT::Id(name) => name,
-        tok => return Err(FilterParserError::UnexpectedToken(tok)),
+        tok => return Err(ParserError::UnexpectedToken(tok)),
     };
 
     let params = if let FT::LPar = parser.peek_token()? {
@@ -193,7 +204,7 @@ fn Param(parser: &mut FParser) -> FResult<FuncParam> {
     }
 
     if tok != FT::Var {
-        return Err(FilterParserError::UnexpectedToken(tok));
+        return Err(ParserError::UnexpectedToken(tok));
     }
 
     let tok = parser.pop_token()?;
@@ -205,7 +216,7 @@ fn Param(parser: &mut FParser) -> FResult<FuncParam> {
         return Ok(FuncParam::VarParam(tok.to_string().into()));
     }
 
-    Err(FilterParserError::UnexpectedToken(tok))
+    Err(ParserError::UnexpectedToken(tok))
 }
 
 /// Exp
@@ -281,7 +292,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                         parser.expect_token(FT::RPar)?;
                         exp
                     }
-                    tok => return Err(FilterParserError::UnexpectedToken(tok)),
+                    tok => return Err(ParserError::UnexpectedToken(tok)),
                 };
 
                 Filter::Foreach(
@@ -321,7 +332,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 parser.expect_token(FT::Var)?;
                 let name = match parser.pop_token()? {
                     FT::Id(name) => name,
-                    tok => return Err(FilterParserError::UnexpectedToken(tok)),
+                    tok => return Err(ParserError::UnexpectedToken(tok)),
                 };
                 parser.expect_token(FT::Op(Op::Pipe))?;
                 let next = Exp(parser)?;
@@ -349,7 +360,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                     term
                 }
             }
-            tok => return Err(FilterParserError::UnexpectedToken(tok)),
+            tok => return Err(ParserError::UnexpectedToken(tok)),
         };
 
         // Operations
@@ -364,7 +375,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
             let (new_precedence, new_assoc) = op_precedence(&op);
             if new_precedence == min_precedence && assoc == OpAssoc::None {
-                return Err(FilterParserError::NonAssocOp(op));
+                return Err(ParserError::NonAssocOp(op));
             }
             if new_precedence < min_precedence
                 || (new_precedence == min_precedence && assoc == OpAssoc::Left)
@@ -451,7 +462,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                 Op::Gt => op_call("_greater", left, right),
                 Op::Le => op_call("_lesseq", left, right),
                 Op::Ge => op_call("_greatereq", left, right),
-                Op::OptAlt => return Err(FilterParserError::UnsupportedOperator(Op::OptAlt)),
+                Op::OptAlt => return Err(ParserError::UnsupportedOperator(Op::OptAlt)),
             };
         }
 
@@ -468,7 +479,7 @@ fn Pattern(parser: &mut FParser) -> FResult<Arc<str>> {
 
     match parser.pop_token()? {
         FT::Id(id) => Ok(id),
-        tok => Err(FilterParserError::UnexpectedToken(tok)),
+        tok => Err(ParserError::UnexpectedToken(tok)),
     }
 }
 
@@ -569,7 +580,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             if let FT::Id(id) = tok {
                 Filter::Break(id)
             } else {
-                return Err(FilterParserError::UnexpectedToken(tok));
+                return Err(ParserError::UnexpectedToken(tok));
             }
         }
         FT::Format(format) => {
@@ -602,7 +613,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             FT::Loc => Filter::Loc("<top-level>".into(), parser.pos().line),
             FT::Id(id) => Filter::Var(id),
             tok if is_keyword(&tok) => Filter::Var(tok.to_string().into()),
-            tok => return Err(FilterParserError::UnexpectedToken(tok)),
+            tok => return Err(ParserError::UnexpectedToken(tok)),
         },
         FT::Id(id) => {
             if let FT::LPar = parser.peek_token()? {
@@ -621,7 +632,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             );
             try_opt(parser, filter)?
         }
-        tok => return Err(FilterParserError::UnexpectedToken(tok)),
+        tok => return Err(ParserError::UnexpectedToken(tok)),
     };
 
     loop {
@@ -640,7 +651,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
                         FT::Colon => {
                             if let FT::RBrack = parser.peek_token()? {
                                 // Term[:] => Invalid
-                                return Err(FilterParserError::UnexpectedToken(
+                                return Err(ParserError::UnexpectedToken(
                                     parser.pop_token()?,
                                 ));
                             }
@@ -654,7 +665,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
                                     return Ok(Filter::Project(Box::new(term), Box::new(left)));
                                 }
                                 FT::Colon => Some(Box::new(left)), // Term[Exp:Exp] | Term[Exp:]
-                                tok => return Err(FilterParserError::UnexpectedToken(tok)),
+                                tok => return Err(ParserError::UnexpectedToken(tok)),
                             }
                         }
                     };
@@ -741,7 +752,7 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
         let key = match parser.pop_token()? {
             FT::Id(id) => id,
             tok if is_keyword(&tok) => tok.to_string().into(),
-            tok => return Err(FilterParserError::UnexpectedToken(tok)),
+            tok => return Err(ParserError::UnexpectedToken(tok)),
         };
 
         return Ok((Filter::string(key.to_string()), Filter::Var(key)));
@@ -759,14 +770,14 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
             parser.expect_token(FT::RPar)?;
             exp
         }
-        tok => return Err(FilterParserError::UnexpectedToken(tok)),
+        tok => return Err(ParserError::UnexpectedToken(tok)),
     };
 
     let val = if let FT::Colon = parser.peek_token()? {
         parser.expect_token(FT::Colon)?;
         ExpD(parser)?
     } else if is_exp {
-        return Err(FilterParserError::ExpectationFailed(ExpectationFailed {
+        return Err(ParserError::ExpectationFailed(ExpectationFailed {
             expected: FT::Colon,
             actual: parser.pop_token()?,
         }));
@@ -878,7 +889,7 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
         str_parser.expect_token(FilterStringToken::Interpolation)?;
 
         // Parse interpolated expression
-        let mut inner_parser = str_parser.morph::<FilterToken, FilterParserError>();
+        let mut inner_parser = str_parser.morph::<FilterToken, ParserError>();
         let exp = Exp(&mut inner_parser)?;
         inner_parser.expect_token(FT::RPar)?;
         inner_parser.morph_into(&mut str_parser);
@@ -921,7 +932,7 @@ fn Number(parser: &mut FParser) -> FResult<Filter> {
     if let FT::Num(n) = tok {
         Ok(Filter::number(n))
     } else {
-        Err(FilterParserError::ExpectedNumber(tok))
+        Err(ParserError::ExpectedNumber(tok))
     }
 }
 
@@ -950,7 +961,7 @@ fn is_keyword(tok: &FilterToken) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::{lexer::LexSource, parser::ParserPos};
+    use crate::lexer::LexSource;
 
     use super::*;
 
@@ -965,20 +976,14 @@ mod tests {
             Ok(filter) => {
                 println!("{filter}");
             }
-            Err((ParserPos { line, column }, err)) => {
-                if let FilterParserError::LexError(err) = err {
-                    println!("lexing error: {err} at line {line}, column {column}");
-                } else {
-                    println!("parsing error: {err} at line {line}, column {column}");
-                }
-            }
+            Err(err) => println!("{err}"),
         }
     }
 
     #[test]
     fn test_lexing() {
         let source = LexSource::str(FILTERS);
-        let mut parser = Parser::<FilterToken, FilterParserError>::new(&source);
+        let mut parser = Parser::<FilterToken, ParserError>::new(&source);
 
         let mut pos = parser.pos();
         loop {

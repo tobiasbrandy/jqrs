@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use either::Either;
 
@@ -34,63 +34,55 @@ impl Default for Colors {
         }
     }
 }
+impl FromStr for Colors {
+    type Err = ();
 
-pub fn parse_color_string(s: &str) -> Colors {
-    fn escape(s: &str) -> String {
-        format!("\x1B[{s}m")
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        fn escape(s: &str) -> String {
+            format!("\x1B[{s}m")
+        }
+    
+        fn try_parse_color_string(s: &str) -> Option<Colors> {
+            let mut colors = s.split(':');
+    
+            Some(Colors {
+                null: escape(colors.next()?),
+                false_: escape(colors.next()?),
+                true_: escape(colors.next()?),
+                number: escape(colors.next()?),
+                string: escape(colors.next()?),
+                array: escape(colors.next()?),
+                object: escape(colors.next()?),
+                obj_key: escape(colors.next()?),
+            })
+        }
+    
+        try_parse_color_string(s).ok_or(())
     }
-
-    fn try_parse_color_string(s: &str) -> Option<Colors> {
-        let mut colors = s.split(':');
-
-        Some(Colors {
-            null: escape(colors.next()?),
-            false_: escape(colors.next()?),
-            true_: escape(colors.next()?),
-            number: escape(colors.next()?),
-            string: escape(colors.next()?),
-            array: escape(colors.next()?),
-            object: escape(colors.next()?),
-            obj_key: escape(colors.next()?),
-        })
-    }
-
-    try_parse_color_string(s).unwrap_or_default()
-}
-
-#[derive(Debug, Clone)]
-struct State {
-    level: usize,
-}
-
-#[derive(Debug, Clone)]
-struct Config {
-    indent: String,
-    newline: &'static str,
-    item_sep: &'static str,
-    key_val_sep: &'static str,
-    sort: bool,
-    colors: Option<Colors>,
 }
 
 // Indentation per level of nesting
-// Spaces' 0 removes ALL whitespace from the output
+#[derive(Debug, Clone)]
 pub enum Indent {
-    Spaces(usize),
+    Spaces(u8),
     Tab,
+    Compact, // Removes all whitespace from the output
 }
 
+#[derive(Debug, Clone)]
 pub struct Format {
     // Indentation per level of nesting
-    indent: Indent,
+    pub indent: Indent,
     // Sort object keys by lexicographic order
-    sort: bool,
+    pub sort: bool,
     // Wether to add color for terminal output
-    colors: Option<Colors>,
+    pub colors: Option<Colors>,
     // If the output is a string, don't quote it
-    raw_str: bool,
+    pub raw_str: bool,
+    // Whether to escape non-ASCII characters in strings
+    pub ascii: bool,
     // Whether to add a trailing newline to the output
-    trailing_newline: bool,
+    pub trailing_char: Option<char>,
 }
 impl Format {
     pub const COMPACT: Self = Self {
@@ -98,7 +90,8 @@ impl Format {
         sort: false,
         colors: None,
         raw_str: false,
-        trailing_newline: false,
+        ascii: false,
+        trailing_char: None,
     };
 
     pub const PRETTY: Self = Self {
@@ -106,7 +99,8 @@ impl Format {
         sort: true,
         colors: None,
         raw_str: false,
-        trailing_newline: true,
+        ascii: false,
+        trailing_char: Some('\n'),
     };
 
     pub fn pretty_color() -> Self {
@@ -115,7 +109,8 @@ impl Format {
             sort: true,
             colors: Some(Colors::default()),
             raw_str: false,
-            trailing_newline: true,
+            ascii: false,
+            trailing_char: Some('\n'),
         }
     }
 }
@@ -123,6 +118,22 @@ impl Default for Format {
     fn default() -> Self {
         Self::COMPACT
     }
+}
+
+#[derive(Debug, Clone)]
+struct State {
+    level: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Config<'a> {
+    indent: String,
+    newline: &'static str,
+    item_sep: &'static str,
+    key_val_sep: &'static str,
+    sort: bool,
+    ascii: bool,
+    colors: Option<&'a Colors>,
 }
 
 fn colorize(s: &str, color: Option<&str>, out: &mut String) {
@@ -135,48 +146,57 @@ fn colorize(s: &str, color: Option<&str>, out: &mut String) {
     }
 }
 
-pub fn format_json(json: &Json, format: Format) -> String {
+pub fn format_json(json: &Json, format: &Format) -> String {
     let Format {
         indent,
         sort,
         colors,
         raw_str,
-        trailing_newline,
+        ascii,
+        trailing_char,
     } = format;
 
-    let trailing = if trailing_newline { "\n" } else { "" };
-
-    if raw_str {
-        if let Json::String(s) = json {
-            let mut out = String::new();
+    if *raw_str && let Json::String(s) = json {
+        let mut out = String::new();
+        if *ascii {
+            out.push('"');
+            quote(s, &mut out, *ascii);
+            out.push('"');
+        } else {
             out.push_str(s);
-            out.push_str(trailing);
-            return out;
         }
+        if let Some(trailing_char) = trailing_char {
+            out.push(*trailing_char);
+        }
+        return out;
     }
 
     let mut state = State { level: 0 };
     let config = Config {
         indent: match indent {
-            Indent::Spaces(n) => " ".repeat(n),
+            Indent::Spaces(n) => " ".repeat(*n as usize),
             Indent::Tab => "\t".to_string(),
+            Indent::Compact => "".to_string(),
         },
         newline: match indent {
-            Indent::Spaces(0) => "",
+            Indent::Compact => "",
             _ => "\n",
         },
         item_sep: ",",
         key_val_sep: match indent {
-            Indent::Spaces(0) => ":",
+            Indent::Compact => ":",
             _ => ": ",
         },
-        sort,
-        colors,
+        sort: *sort,
+        ascii: *ascii,
+        colors: colors.as_ref(),
     };
 
     let mut out = String::new();
     format_json_value(json, &config, &mut state, &mut out);
-    out.push_str(trailing);
+    if let Some(trailing_char) = trailing_char {
+        out.push(*trailing_char);
+    }
     out
 }
 
@@ -288,7 +308,7 @@ fn format_object(
             out.push_str(key_color);
         }
         out.push('"');
-        quote(key, out);
+        quote(key, out, config.ascii);
         out.push('"');
         if key_color.is_some() {
             out.push_str(COLOR_RESET);
@@ -361,20 +381,20 @@ fn format_number(n: &Number, Config { colors, .. }: &Config, out: &mut String) {
     }
 }
 
-fn format_string(s: &str, Config { colors, .. }: &Config, out: &mut String) {
-    fn encode(s: &str, out: &mut String) {
+fn format_string(s: &str, Config { colors, ascii, .. }: &Config, out: &mut String) {
+    fn encode(s: &str, out: &mut String, ascii: bool) {
         out.push('"');
-        quote(s, out);
+        quote(s, out, ascii);
         out.push('"');
     }
 
     match colors {
         Some(Colors { string, .. }) => {
             out.push_str(string.as_str());
-            encode(s, out);
+            encode(s, out, *ascii);
             out.push_str(COLOR_RESET);
         }
-        None => encode(s, out),
+        None => encode(s, out, *ascii),
     }
 }
 
@@ -382,17 +402,18 @@ fn format_string(s: &str, Config { colors, .. }: &Config, out: &mut String) {
 /// For each character in `s`, if it is a double quote, backslash,
 /// or a control character (< 0x20), then it is replaced with its
 /// corresponding escape sequence. Otherwise, the character is emitted as-is.
-fn quote(s: &str, out: &mut String) {
+/// If `ascii` is true, all non-ASCII characters are escaped.
+fn quote(s: &str, out: &mut String, ascii: bool) {
     /// Determines whether a character needs escaping.
-    fn needs_escape(c: char) -> bool {
-        c == '"' || c == '\\' || (c < '\x20')
+    fn needs_escape(c: char, ascii: bool) -> bool {
+        c == '"' || c == '\\' || c < '\x20' || (ascii && !c.is_ascii())
     }
 
     /// Escapes a single character.
     /// For standard escapes it returns strings like "\\\"", "\\n", etc.
     /// For control characters (less than 0x20) not handled by the standard ones,
     /// it produces a Unicode escape like "\\u001F".
-    fn escape(c: char, out: &mut String) {
+    fn escape(c: char, out: &mut String, ascii: bool) {
         match c {
             '"' => out.push_str(r#"\""#),
             '\\' => out.push_str(r"\\"),
@@ -401,7 +422,7 @@ fn quote(s: &str, out: &mut String) {
             '\n' => out.push_str(r"\n"),
             '\r' => out.push_str(r"\r"),
             '\t' => out.push_str(r"\t"),
-            c if c < '\x20' => {
+            c if c < '\x20' || (ascii && !c.is_ascii()) => {
                 // Produce a Unicode escape sequence with 4-digit padding.
                 let hex = format!("{:x}", c as u32);
                 let pad = "0".repeat(4 - hex.len());
@@ -415,11 +436,11 @@ fn quote(s: &str, out: &mut String) {
     // copy over large chunks that do not require escaping.
     let mut last = 0;
     for (i, ch) in s.char_indices() {
-        if needs_escape(ch) {
+        if needs_escape(ch, ascii) {
             // Push the part of the string that does not need escaping.
             out.push_str(&s[last..i]);
             // Append the escape sequence for the character.
-            escape(ch, out);
+            escape(ch, out, ascii);
             // Update the index after the escaped character.
             last = i + ch.len_utf8();
         }
