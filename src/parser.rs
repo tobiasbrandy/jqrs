@@ -246,11 +246,9 @@ where
             return None;
         }
 
-        if !first {
-            if let Err(err) = self.parser.expect_token(self.separator.clone()) {
-                self.ended = true;
-                return Some(Err(err));
-            }
+        if !first && let Err(err) = self.parser.expect_token(self.separator.clone()) {
+            self.ended = true;
+            return Some(Err(err));
         }
 
         let elem = (self.element_parser)(self.parser);

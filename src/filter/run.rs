@@ -915,15 +915,13 @@ async fn run_func_call(
     let argc = args.len();
 
     // Try recursive call
-    if let Some((curr_name, curr_argc, curr_func)) = ctx.get_current_func() {
-        if curr_name == *name && curr_argc == argc {
-            let func_def = FuncDef {
-                state: curr_func.state.lock().unwrap().clone(),
-                params: curr_func.params,
-                body: curr_func.body,
-            };
-            return func_call(out, ctx, func_def, args, json).await;
-        }
+    if let Some((curr_name, curr_argc, curr_func)) = ctx.get_current_func() && curr_name == *name && curr_argc == argc {
+        let func_def = FuncDef {
+            state: curr_func.state.lock().unwrap().clone(),
+            params: curr_func.params,
+            body: curr_func.body,
+        };
+        return func_call(out, ctx, func_def, args, json).await;
     }
 
     // Try user function call
@@ -959,10 +957,8 @@ async fn run_label(
         ctx.remove_label(label);
     }
 
-    if let Some(RunEndValue::Break(break_label)) = results.end() {
-        if break_label != *label {
-            return Some(RunEndValue::Break(break_label));
-        }
+    if let Some(RunEndValue::Break(break_label)) = results.end() && break_label != *label {
+        return Some(RunEndValue::Break(break_label));
     }
 
     None
