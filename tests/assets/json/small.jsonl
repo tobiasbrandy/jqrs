@@ -1,0 +1,19 @@
+[
+    "",
+    true,
+    false,
+    {
+        "string": "Hello, world!",
+        "number": 42,
+        "object": {
+            "key": "value",
+            "b": [1,2]
+        },
+        "array": [1, "two", false, [1,2,3], {"a": 1, "b": true}],
+        "boolean": true,
+        "null": null
+    }
+]
+true
+"Hello, world!"
+{"key": "value", "b": [1,2]}
