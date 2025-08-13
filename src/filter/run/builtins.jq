@@ -26,18 +26,18 @@ def select(f): if f then . else empty end;
 #           )
 #         )
 #     );
-# def map_values(f): .[] |= f;
+def map_values(f): .[] |= f;
 
-# # recurse
-# def recurse(f): def r: ., (f | r); r;
-# def recurse(f; cond): def r: ., (f | select(cond) | r); r;
-# def recurse: recurse(.[]?);
-# def recurse_down: recurse;
+# recurse
+def recurse(f): def r: ., (f | r); r;
+def recurse(f; cond): def r: ., (f | select(cond) | r); r;
+def recurse: recurse(.[]?);
+def recurse_down: recurse;
 
 # def to_entries: [keys_unsorted[] as $k | {key: $k, value: .[$k]}];
 # def from_entries: map({(.key // .Key // .name // .Name): (if has("value") then .value else .Value end)}) | add | .//={};
 # def with_entries(f): to_entries | map(f) | from_entries;
-# def reverse: [.[length - 1 - range(0;length)]];
+def reverse: [.[length - 1 - range(0;length)]];
 # def indices($i): if type == "array" and ($i|type) == "array" then .[$i]
 #   elif type == "array" then .[[$i]]
 #   elif type == "string" and ($i|type) == "string" then _strindices($i)
@@ -151,38 +151,38 @@ def select(f): if f then . else empty end;
 # def gsub($re; s; flags): sub($re; s; flags + "g");
 # def gsub($re; s): sub($re; s; "g");
 
-# ########################################################################
-# # generic iterator/generator
-# def while(cond; update):
-#      def _while:
-#          if cond then ., (update | _while) else empty end;
-#      _while;
-# def until(cond; next):
-#      def _until:
-#          if cond then . else (next|_until) end;
-#      _until;
-# def limit($n; exp):
-#     if $n > 0 then label $out | foreach exp as $item ($n; .-1; $item, if . <= 0 then break $out else empty end)
-#     elif $n == 0 then empty
-#     else exp end;
-# # range/3, with a `by` expression argument
-# def range($init; $upto; $by):
-#     if $by > 0 then $init|while(. < $upto; . + $by)
-#   elif $by < 0 then $init|while(. > $upto; . + $by)
-#   else empty end;
-# def first(g): label $out | g | ., break $out;
-# def isempty(g): first((g|false), true);
+########################################################################
+# generic iterator/generator
+def while(cond; update):
+     def _while:
+         if cond then ., (update | _while) else empty end;
+     _while;
+def until(cond; next):
+     def _until:
+         if cond then . else (next|_until) end;
+     _until;
+def limit($n; exp):
+    if $n > 0 then label $out | foreach exp as $item ($n; .-1; $item, if . <= 0 then break $out else empty end)
+    elif $n == 0 then empty
+    else exp end;
+# range/3, with a `by` expression argument
+def range($init; $upto; $by):
+    if $by > 0 then $init|while(. < $upto; . + $by)
+  elif $by < 0 then $init|while(. > $upto; . + $by)
+  else empty end;
+def first(g): label $out | g | ., break $out;
+def isempty(g): first((g|false), true);
 # def all(generator; condition): isempty(generator|condition and empty);
 # def any(generator; condition): isempty(generator|condition or empty)|not;
-# def all(condition): all(.[]; condition);
-# def any(condition): any(.[]; condition);
-# def all: all(.[]; .);
-# def any: any(.[]; .);
-# def last(g): reduce g as $item (null; $item);
+def all(condition): all(.[]; condition);
+def any(condition): any(.[]; condition);
+def all: all(.[]; .);
+def any: any(.[]; .);
+def last(g): reduce g as $item (null; $item);
 # def nth($n; g): if $n < 0 then error("nth doesn't support negative indices") else last(limit($n + 1; g)) end;
-# def first: .[0];
-# def last: .[-1];
-# def nth($n): .[$n];
+def first: .[0];
+def last: .[-1];
+def nth($n): .[$n];
 # def combinations:
 #     if length == 0 then [] else
 #         .[0][] as $x

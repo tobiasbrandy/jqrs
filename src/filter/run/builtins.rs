@@ -1,27 +1,32 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, Mutex},
 };
 
+use im::{HashMap as ImHashMap, HashSet as ImHashSet};
 use rug::{float::Round, Integer};
 
 use crate::{
     filter::{
-        run::{json_fmt_error, str_error},
+        run::{json_fmt_error, str_error, FuncId, Scope},
         Filter,
     },
     json::Json,
     math::Number,
 };
 
-use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunState, RunValue};
+use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunValue};
 
-pub static JQ_BUILTINS: LazyLock<HashMap<(Arc<str>, usize), FuncDef>> = LazyLock::new(|| {
+pub static JQ_BUILTINS: LazyLock<ImHashMap<FuncId, Arc<FuncDef>>> = LazyLock::new(|| {
     let ctx = RunCtx {
         file: RunFile::Module("builtins.jq".to_string()),
-        custom_builtins: Some(HashMap::new()),
-        state: RefCell::new(RunState::default()),
+        scope: RefCell::new(Arc::new(Mutex::new(Scope {
+            vars: ImHashMap::new(),
+            funcs: ImHashMap::new(),
+            labels: ImHashSet::new(),
+            is_top_level: true,
+        }))),
     };
 
     include_str!("builtins.jq")
@@ -30,7 +35,7 @@ pub static JQ_BUILTINS: LazyLock<HashMap<(Arc<str>, usize), FuncDef>> = LazyLock
         .run(&ctx, &Json::Null)
         .last();
 
-    ctx.state.into_inner().funcs
+    ctx.scope.into_inner().lock().unwrap().funcs.clone()
 });
 
 pub async fn run_rs_builtin(

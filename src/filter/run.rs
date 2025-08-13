@@ -3,10 +3,12 @@ mod run_gen;
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     iter::zip,
     sync::{Arc, Mutex},
 };
+
+use im::{HashMap as ImHashMap, HashSet as ImHashSet};
 
 use either::Either;
 
@@ -15,7 +17,7 @@ use crate::{json::Json, math::Number};
 use super::{Filter, FuncParam};
 
 pub use run_gen::RunGen;
-use run_gen::{yield_, RunOut};
+use run_gen::{RunOut, yield_};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEndValue {
@@ -27,6 +29,23 @@ pub type RunEnd = Option<RunEndValue>;
 
 pub type RunValue = Result<Json, RunEndValue>;
 
+pub type FuncId = (Arc<str>, usize);
+
+#[derive(Debug, Clone)]
+struct FuncDef {
+    scope: Arc<Mutex<Scope>>,
+    params: Vec<Arc<str>>,
+    body: Arc<Filter>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Scope {
+    vars: ImHashMap<Arc<str>, Arc<Json>>,
+    funcs: ImHashMap<FuncId, Arc<FuncDef>>,
+    labels: ImHashSet<Arc<str>>,
+    is_top_level: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 enum RunFile {
     #[default]
@@ -35,101 +54,88 @@ enum RunFile {
 }
 
 #[derive(Debug, Clone)]
-struct FuncDef {
-    state: RunState,
-    params: Vec<Arc<str>>,
-    body: Filter,
-}
-
-#[derive(Debug, Clone)]
-struct CurrentFuncDef {
-    state: Arc<Mutex<RunState>>,
-    params: Vec<Arc<str>>,
-    body: Filter,
-}
-
-#[derive(Debug, Clone, Default)]
-struct RunState {
-    vars: HashMap<Arc<str>, Json>,
-    funcs: HashMap<(Arc<str>, usize), FuncDef>,
-    labels: HashSet<Arc<str>>,
-    current_func: Option<(Arc<str>, usize, CurrentFuncDef)>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct RunCtx {
-    /// The jq file we are currently running
     file: RunFile,
-    /// Custom user defined builtins to use instead of the default builtins
-    custom_builtins: Option<HashMap<(Arc<str>, usize), FuncDef>>,
-    /// Run inner state
-    state: RefCell<RunState>,
+    scope: RefCell<Arc<Mutex<Scope>>>,
+}
+impl Default for RunCtx {
+    fn default() -> Self {
+        Self {
+            file: RunFile::Main,
+            scope: RefCell::new(Arc::new(Mutex::new(Scope {
+                vars: ImHashMap::new(),
+                funcs: builtins::JQ_BUILTINS.clone(),
+                labels: ImHashSet::new(),
+                is_top_level: true,
+            }))),
+        }
+    }
 }
 impl RunCtx {
     pub fn new(vars: HashMap<Arc<str>, Json>) -> Self {
         Self {
             file: RunFile::Main,
-            custom_builtins: None,
-            state: RefCell::new(RunState {
-                vars,
-                funcs: HashMap::new(),
-                labels: HashSet::new(),
-                current_func: None,
-            }),
+            scope: RefCell::new(Arc::new(Mutex::new(Scope {
+                vars: vars.into_iter().map(|(k, v)| (k, Arc::new(v))).collect(),
+                funcs: builtins::JQ_BUILTINS.clone(),
+                labels: ImHashSet::new(),
+                is_top_level: true,
+            }))),
         }
     }
 
+    fn start_new_scope(&self) -> Arc<Mutex<Scope>> {
+        self.scope
+            .replace_with(|og_frame| Arc::new(Mutex::new(og_frame.lock().unwrap().clone())))
+    }
+
+    fn restore_scope(&self, frame: Arc<Mutex<Scope>>) -> Arc<Mutex<Scope>> {
+        self.scope.replace(frame)
+    }
+
     fn is_top_level(&self) -> bool {
-        self.state.borrow().current_func.is_none()
+        self.scope.borrow().lock().unwrap().is_top_level
     }
 
-    fn get_var(&self, name: &str) -> Option<Json> {
-        self.state.borrow().vars.get(name).cloned()
+    fn get_var(&self, name: &str) -> Option<Arc<Json>> {
+        self.scope.borrow().lock().unwrap().vars.get(name).cloned()
     }
 
-    fn insert_var(&self, name: &Arc<str>, val: Json) -> Option<Json> {
-        self.state.borrow_mut().vars.insert(name.clone(), val)
+    fn insert_var(&self, name: Arc<str>, val: Arc<Json>) -> Option<Arc<Json>> {
+        self.scope.borrow().lock().unwrap().vars.insert(name, val)
     }
 
-    fn remove_var(&self, name: &str) -> Option<Json> {
-        self.state.borrow_mut().vars.remove(name)
+    fn get_func(&self, name: Arc<str>, argc: usize) -> Option<Arc<FuncDef>> {
+        self.scope
+            .borrow()
+            .lock()
+            .unwrap()
+            .funcs
+            .get(&(name, argc))
+            .cloned()
     }
 
-    fn get_builtin(&self, name: Arc<str>, argc: usize) -> Option<&FuncDef> {
-        let builtins = match &self.custom_builtins {
-            Some(builtins) => builtins,
-            None => &builtins::JQ_BUILTINS,
-        };
-
-        builtins.get(&(name, argc))
-    }
-
-    fn get_func(&self, name: Arc<str>, argc: usize) -> Option<FuncDef> {
-        self.state.borrow().funcs.get(&(name, argc)).cloned()
-    }
-
-    fn insert_func(&self, name: Arc<str>, argc: usize, func: FuncDef) -> Option<FuncDef> {
-        self.state.borrow_mut().funcs.insert((name, argc), func)
-    }
-
-    fn remove_func(&self, name: Arc<str>, argc: usize) -> Option<FuncDef> {
-        self.state.borrow_mut().funcs.remove(&(name, argc))
+    fn insert_func(&self, name: Arc<str>, argc: usize, func: Arc<FuncDef>) -> Option<Arc<FuncDef>> {
+        self.scope
+            .borrow()
+            .lock()
+            .unwrap()
+            .funcs
+            .insert((name, argc), func)
     }
 
     fn has_label(&self, label: &str) -> bool {
-        self.state.borrow().labels.contains(label)
+        self.scope.borrow().lock().unwrap().labels.contains(label)
     }
 
     fn insert_label(&self, label: Arc<str>) -> bool {
-        self.state.borrow_mut().labels.insert(label)
-    }
-
-    fn remove_label(&self, label: &str) -> bool {
-        self.state.borrow_mut().labels.remove(label)
-    }
-
-    fn get_current_func(&self) -> Option<(Arc<str>, usize, CurrentFuncDef)> {
-        self.state.borrow().current_func.clone()
+        self.scope
+            .borrow()
+            .lock()
+            .unwrap()
+            .labels
+            .insert(label)
+            .is_some()
     }
 }
 
@@ -176,7 +182,7 @@ async fn run(out: RunOut<'_>, ctx: &RunCtx, filter: &Filter, json: &Json) -> Run
 
 async fn run_var(out: RunOut<'_>, ctx: &RunCtx, name: &str) -> RunEnd {
     match ctx.get_var(name) {
-        Some(val) => yield_!(out, val),
+        Some(val) => yield_!(out, (*val).clone()),
         None => return Some(str_error(format!("${name} is not defined"))),
     }
     None
@@ -190,36 +196,25 @@ async fn run_var_def(
     next: &Filter,
     json: &Json,
 ) -> RunEnd {
-    fn restore_ctx(ctx: &RunCtx, og_var_name: &Arc<str>, og_var: Option<Json>) {
-        if let Some(og_var) = og_var {
-            ctx.insert_var(og_var_name, og_var);
-        }
-    }
-
     let mut bodies = RunGen::build(ctx, body, json);
-
-    let og_var = ctx.remove_var(name);
-
     for body in &mut bodies {
-        ctx.insert_var(name, body);
+        let og_scope = ctx.start_new_scope();
+        ctx.insert_var(name.clone(), Arc::new(body));
 
         let mut nexts = RunGen::build(ctx, next, json);
         for next in &mut nexts {
+            let new_scope = ctx.restore_scope(og_scope.clone());
             yield_!(out, next);
+            ctx.restore_scope(new_scope);
         }
+
+        ctx.restore_scope(og_scope);
+
         if let Some(end) = nexts.end() {
-            restore_ctx(ctx, name, og_var);
             return Some(end);
         }
     }
-
-    restore_ctx(ctx, name, og_var);
-
-    if let Some(end) = bodies.end() {
-        return Some(end);
-    }
-
-    None
+    bodies.end()
 }
 
 async fn run_array_lit(out: RunOut<'_>, ctx: &RunCtx, items: &Filter, json: &Json) -> RunEnd {
@@ -522,7 +517,7 @@ async fn run_iter(out: RunOut<'_>, json: &Json) -> RunEnd {
             return Some(str_error(format!(
                 "Cannot iterate over {}",
                 json_fmt_error(any)
-            )))
+            )));
         }
     }
 
@@ -683,50 +678,38 @@ async fn run_reduce(
     update: &Filter,
     json: &Json,
 ) -> RunEnd {
-    fn restore_ctx(ctx: &RunCtx, og_var_name: &Arc<str>, og_var: Option<Json>) {
-        if let Some(var) = og_var {
-            ctx.insert_var(og_var_name, var);
-        }
-    }
-
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
 
     let mut bases = RunGen::build(ctx, init, json);
     for base in &mut bases {
-        let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
-
-        let og_var = ctx.remove_var(name);
-
         let mut acc = base;
-        for val in &mut stream {
-            ctx.insert_var(name, val.clone());
 
+        let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
+        for val in &mut stream {
             acc = {
+                let og_scope = ctx.start_new_scope();
+                ctx.insert_var(name.clone(), Arc::new(val));
+
                 let mut updates = RunGen::build(ctx, update, &acc);
                 let new_acc = updates.by_ref().fold(Json::Null, |_, j| j);
+
+                ctx.restore_scope(og_scope);
+
                 if let Some(end) = updates.end() {
-                    restore_ctx(ctx, name, og_var);
                     return Some(end);
                 }
                 new_acc
             }
         }
         if let Some(end) = stream.end() {
-            restore_ctx(ctx, name, og_var);
             return Some(end);
         }
 
         // We only yield the accumulator's last value
         yield_!(out, acc);
-
-        restore_ctx(ctx, name, og_var);
     }
-    if let Some(end) = bases.end() {
-        return Some(end);
-    }
-
-    None
+    bases.end()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -740,44 +723,40 @@ async fn run_foreach(
     extract: &Filter,
     json: &Json,
 ) -> RunEnd {
-    fn restore_ctx(ctx: &RunCtx, og_var_name: &Arc<str>, og_var: Option<Json>) {
-        if let Some(var) = og_var {
-            ctx.insert_var(og_var_name, var);
-        }
-    }
-
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
 
     let mut bases = RunGen::build(ctx, init, json);
     for base in &mut bases {
-        let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
-
-        let og_var = ctx.remove_var(name);
-
         let mut acc = base;
-        for val in &mut stream {
-            ctx.insert_var(name, val.clone());
 
+        let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
+        for val in &mut stream {
             acc = {
-                let mut updates = RunGen::build(ctx, update, &acc);
+                let og_scope = ctx.start_new_scope();
+                ctx.insert_var(name.clone(), Arc::new(val));
 
                 let mut new_acc = Json::Null;
 
+                let mut updates = RunGen::build(ctx, update, &acc);
                 for update in &mut updates {
                     new_acc = update;
 
                     let mut extracts = RunGen::build(ctx, extract, &new_acc);
                     for extract in &mut extracts {
+                        let new_scope = ctx.restore_scope(og_scope.clone());
                         yield_!(out, extract);
+                        ctx.restore_scope(new_scope);
                     }
                     if let Some(end) = extracts.end() {
-                        restore_ctx(ctx, name, og_var);
+                        ctx.restore_scope(og_scope);
                         return Some(end);
                     }
                 }
+
+                ctx.restore_scope(og_scope);
+
                 if let Some(end) = updates.end() {
-                    restore_ctx(ctx, name, og_var);
                     return Some(end);
                 }
 
@@ -785,17 +764,11 @@ async fn run_foreach(
             }
         }
 
-        restore_ctx(ctx, name, og_var);
-
         if let Some(end) = stream.end() {
             return Some(end);
         }
     }
-    if let Some(end) = bases.end() {
-        return Some(end);
-    }
-
-    None
+    bases.end()
 }
 
 async fn run_func_def(
@@ -826,47 +799,28 @@ async fn run_func_def(
         }
     }
 
-    let prev_func = ctx.remove_func(name.clone(), params.len());
-
-    {
-        let func_state = Arc::new(Mutex::new(ctx.state.borrow().clone()));
-        func_state.lock().unwrap().current_func = Some((
-            name.clone(),
-            params.len(),
-            CurrentFuncDef {
-                state: func_state.clone(),
-                params: param_names.clone(),
-                body: body.clone(),
-            },
-        ));
-
-        ctx.insert_func(
-            name.clone(),
-            params.len(),
-            FuncDef {
-                state: func_state.lock().unwrap().clone(),
-                params: param_names,
-                body,
-            },
-        );
-
-        // drop func_state -> Arc only owned by ctx.state.current_func
-    }
+    let og_scope = ctx.start_new_scope();
+    ctx.insert_func(
+        name.clone(),
+        params.len(),
+        Arc::new(FuncDef {
+            scope: ctx.scope.borrow().clone(),
+            params: param_names,
+            body: Arc::new(body),
+        }),
+    );
 
     let mut nexts = RunGen::build(ctx, next, json);
     for next in &mut nexts {
+        let new_scope = ctx.restore_scope(og_scope.clone());
         yield_!(out, next);
+        ctx.restore_scope(new_scope);
     }
     let ret = nexts.end();
 
     // Restore scope only on the top level of modules
-    let restore_scope = ctx.file == RunFile::Main || !ctx.is_top_level();
-    if restore_scope {
-        if let Some(prev_func) = prev_func {
-            ctx.insert_func(name.clone(), params.len(), prev_func);
-        } else {
-            ctx.remove_func(name.clone(), params.len());
-        }
+    if ctx.file == RunFile::Main || !ctx.is_top_level() {
+        ctx.restore_scope(og_scope);
     }
 
     ret
@@ -879,64 +833,43 @@ async fn run_func_call(
     args: &[Filter],
     json: &Json,
 ) -> RunEnd {
-    async fn func_call(
-        out: RunOut<'_>,
-        ctx: &RunCtx,
-        mut func: FuncDef,
-        args: &[Filter],
-        json: &Json,
-    ) -> RunEnd {
-        for (param, arg) in zip(func.params, args) {
-            func.state.funcs.insert(
-                (param, 0),
-                FuncDef {
-                    state: ctx.state.borrow().clone(),
+    let argc = args.len();
+
+    if let Some(func) = ctx.get_func(name.clone(), argc) {
+        // User defined or builtin function call
+        let og_scope = ctx.restore_scope(func.scope.clone());
+        ctx.start_new_scope();
+        ctx.scope.borrow().lock().unwrap().is_top_level = false;
+
+        for (param, arg) in zip(func.params.iter(), args) {
+            ctx.insert_func(
+                param.clone(),
+                0,
+                Arc::new(FuncDef {
+                    scope: og_scope.clone(),
                     params: vec![],
-                    body: arg.clone(),
-                },
+                    body: Arc::new(arg.clone()),
+                }),
             );
         }
-
-        std::mem::swap(&mut *ctx.state.borrow_mut(), &mut func.state);
 
         let ret = {
             let mut results = RunGen::build(ctx, &func.body, json);
             for result in &mut results {
+                let new_scope = ctx.restore_scope(og_scope.clone());
                 yield_!(out, result);
+                ctx.restore_scope(new_scope);
             }
             results.end()
         };
 
-        std::mem::swap(&mut *ctx.state.borrow_mut(), &mut func.state);
+        ctx.restore_scope(og_scope);
 
         ret
+    } else {
+        // Rust builtin function call
+        builtins::run_rs_builtin(name, argc, out, ctx, args, json).await
     }
-
-    let argc = args.len();
-
-    // Try recursive call
-    if let Some((curr_name, curr_argc, curr_func)) = ctx.get_current_func() && curr_name == *name && curr_argc == argc {
-        let func_def = FuncDef {
-            state: curr_func.state.lock().unwrap().clone(),
-            params: curr_func.params,
-            body: curr_func.body,
-        };
-        return func_call(out, ctx, func_def, args, json).await;
-    }
-
-    // Try user function call
-    if let Some(func) = ctx.get_func(name.clone(), argc) {
-        let func = func.clone();
-        return func_call(out, ctx, func, args, json).await;
-    }
-
-    // Try jq builtin call
-    if let Some(func) = ctx.get_builtin(name.clone(), argc) {
-        return func_call(out, ctx, func.clone(), args, json).await;
-    }
-
-    // Only option left is rs builtin call
-    builtins::run_rs_builtin(name, argc, out, ctx, args, json).await
 }
 
 async fn run_label(
@@ -946,18 +879,21 @@ async fn run_label(
     then: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let inserted = ctx.insert_label(label.clone());
+    let og_scope = ctx.start_new_scope();
+    ctx.insert_label(label.clone());
 
     let mut results = RunGen::build(ctx, then, json);
     for result in &mut results {
+        let new_scope = ctx.restore_scope(og_scope.clone());
         yield_!(out, result);
+        ctx.restore_scope(new_scope);
     }
 
-    if inserted {
-        ctx.remove_label(label);
-    }
+    ctx.restore_scope(og_scope);
 
-    if let Some(RunEndValue::Break(break_label)) = results.end() && break_label != *label {
+    if let Some(RunEndValue::Break(break_label)) = results.end()
+        && break_label != *label
+    {
         return Some(RunEndValue::Break(break_label));
     }
 
@@ -1041,7 +977,7 @@ mod test {
         let ctx = RunCtx::default();
         let mut run_gen = filter.run(&ctx, &input);
         for json in &mut run_gen {
-            println!("{json:?}");
+            print!("{json:?}");
         }
         if let Some(end) = run_gen.end() {
             match end {
