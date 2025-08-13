@@ -1,10 +1,8 @@
 mod builtins;
-mod run_gen;
 
 use std::{
     cell::RefCell,
     collections::HashMap,
-    iter::zip,
     sync::{Arc, Mutex},
 };
 
@@ -16,8 +14,7 @@ use crate::{json::Json, math::Number};
 
 use super::{Filter, FuncParam};
 
-pub use run_gen::RunGen;
-use run_gen::{RunOut, yield_};
+// ------------------- API types --------------------- //
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEndValue {
@@ -30,6 +27,66 @@ pub type RunEnd = Option<RunEndValue>;
 pub type RunValue = Result<Json, RunEndValue>;
 
 pub type FuncId = (Arc<str>, usize);
+
+// ------------------- Generator API & Polyfills --------------------- //
+
+type RunOut = genawaiter::rc::Co<Json>;
+
+/// Generator with iterator semantics and an end value
+pub struct RunGen<F: Future<Output = RunEnd>> {
+    run_gen: genawaiter::rc::Gen<Json, (), F>,
+    end: RunEnd,
+}
+impl<F: Future<Output = RunEnd>> RunGen<F> {
+    fn new(producer: impl FnOnce(RunOut) -> F) -> Self {
+        Self {
+            run_gen: genawaiter::rc::Gen::new(producer),
+            end: None,
+        }
+    }
+
+    pub fn resume(&mut self) -> genawaiter::GeneratorState<Json, RunEnd> {
+        self.run_gen.resume()
+    }
+
+    pub fn end(&mut self) -> RunEnd {
+        self.end.take()
+    }
+}
+impl<F: Future<Output = RunEnd>> genawaiter::Coroutine for RunGen<F> {
+    type Yield = Json;
+    type Resume = ();
+    type Return = F::Output;
+
+    fn resume_with(
+        mut self: std::pin::Pin<&mut Self>,
+        arg: Self::Resume,
+    ) -> genawaiter::GeneratorState<Self::Yield, Self::Return> {
+        self.run_gen.resume_with(arg)
+    }
+}
+impl<F: Future<Output = RunEnd>> Iterator for RunGen<F> {
+    type Item = Json;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.resume() {
+            genawaiter::GeneratorState::Yielded(val) => Some(val),
+            genawaiter::GeneratorState::Complete(end) => {
+                self.end = end;
+                None
+            }
+        }
+    }
+}
+
+macro_rules! yield_ {
+    ($out:ident, $val:expr) => {
+        $out.yield_($val).await
+    };
+}
+use yield_;
+
+// ------------------- Internal types - Context, FuncDef & Scope --------------------- //
 
 #[derive(Debug, Clone)]
 struct FuncDef {
@@ -139,48 +196,54 @@ impl RunCtx {
     }
 }
 
-async fn run(out: RunOut<'_>, ctx: &RunCtx, filter: &Filter, json: &Json) -> RunEnd {
-    match filter {
-        Filter::Identity => {
-            yield_!(out, json.clone());
-            None
+// ------------------- Implementation --------------------- //
+
+pub(crate) fn run(ctx: &RunCtx, filter: &Filter, json: &Json) -> RunGen<impl Future<Output = RunEnd>> {
+    async fn inner_run(out: RunOut, ctx: &RunCtx, filter: &Filter, json: &Json) -> RunEnd {
+        match filter {
+            Filter::Identity => {
+                yield_!(out, json.clone());
+                None
+            }
+            Filter::Empty => None,
+            Filter::Json(json) => {
+                yield_!(out, json.clone());
+                None
+            }
+            Filter::Var(name) => run_var(out, ctx, name).await,
+            Filter::VarDef(name, body, next) => run_var_def(out, ctx, name, body, next, json).await,
+            Filter::ArrayLit(items) => run_array_lit(out, ctx, items, json).await,
+            Filter::ObjectLit(items) => run_object_lit(out, ctx, items, json).await,
+            Filter::Project(term, key) => run_project(out, ctx, term, key, json).await,
+            Filter::Slice(term, left, right) => {
+                run_slice(out, ctx, term, left.as_deref(), right.as_deref(), json).await
+            }
+            Filter::Iter => run_iter(out, json).await,
+            Filter::Pipe(left, right) => run_pipe(out, ctx, left, right, json).await,
+            Filter::Alt(left, right) => run_alt(out, ctx, left, right, json).await,
+            Filter::TryCatch(try_, catch_) => run_try_catch(out, ctx, try_, catch_, json).await,
+            Filter::Comma(left, right) => run_comma(out, ctx, left, right, json).await,
+            Filter::IfElse(cond, then, else_) => run_if_else(out, ctx, cond, then, else_, json).await,
+            Filter::Reduce(exp, name, init, update) => {
+                run_reduce(out, ctx, exp, name, init, update, json).await
+            }
+            Filter::Foreach(exp, name, init, update, extract) => {
+                run_foreach(out, ctx, exp, name, init, update, extract, json).await
+            }
+            Filter::FuncDef(name, params, body, next) => {
+                run_func_def(out, ctx, name, params, body, next, json).await
+            }
+            Filter::FuncCall(name, args) => run_func_call(out, ctx, name, args, json).await,
+            Filter::Label(label, then) => run_label(out, ctx, label, then, json).await,
+            Filter::Break(label) => run_break(ctx, label).await,
+            Filter::Loc(file, line) => run_loc(out, file, *line).await,
         }
-        Filter::Empty => None,
-        Filter::Json(json) => {
-            yield_!(out, json.clone());
-            None
-        }
-        Filter::Var(name) => run_var(out, ctx, name).await,
-        Filter::VarDef(name, body, next) => run_var_def(out, ctx, name, body, next, json).await,
-        Filter::ArrayLit(items) => run_array_lit(out, ctx, items, json).await,
-        Filter::ObjectLit(items) => run_object_lit(out, ctx, items, json).await,
-        Filter::Project(term, key) => run_project(out, ctx, term, key, json).await,
-        Filter::Slice(term, left, right) => {
-            run_slice(out, ctx, term, left.as_deref(), right.as_deref(), json).await
-        }
-        Filter::Iter => run_iter(out, json).await,
-        Filter::Pipe(left, right) => run_pipe(out, ctx, left, right, json).await,
-        Filter::Alt(left, right) => run_alt(out, ctx, left, right, json).await,
-        Filter::TryCatch(try_, catch_) => run_try_catch(out, ctx, try_, catch_, json).await,
-        Filter::Comma(left, right) => run_comma(out, ctx, left, right, json).await,
-        Filter::IfElse(cond, then, else_) => run_if_else(out, ctx, cond, then, else_, json).await,
-        Filter::Reduce(exp, name, init, update) => {
-            run_reduce(out, ctx, exp, name, init, update, json).await
-        }
-        Filter::Foreach(exp, name, init, update, extract) => {
-            run_foreach(out, ctx, exp, name, init, update, extract, json).await
-        }
-        Filter::FuncDef(name, params, body, next) => {
-            run_func_def(out, ctx, name, params, body, next, json).await
-        }
-        Filter::FuncCall(name, args) => run_func_call(out, ctx, name, args, json).await,
-        Filter::Label(label, then) => run_label(out, ctx, label, then, json).await,
-        Filter::Break(label) => run_break(ctx, label).await,
-        Filter::Loc(file, line) => run_loc(out, file, *line).await,
     }
+
+    RunGen::new(|co| inner_run(co, ctx, filter, json))
 }
 
-async fn run_var(out: RunOut<'_>, ctx: &RunCtx, name: &str) -> RunEnd {
+async fn run_var(out: RunOut, ctx: &RunCtx, name: &str) -> RunEnd {
     match ctx.get_var(name) {
         Some(val) => yield_!(out, (*val).clone()),
         None => return Some(str_error(format!("${name} is not defined"))),
@@ -189,19 +252,19 @@ async fn run_var(out: RunOut<'_>, ctx: &RunCtx, name: &str) -> RunEnd {
 }
 
 async fn run_var_def(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     name: &Arc<str>,
     body: &Filter,
     next: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let mut bodies = RunGen::build(ctx, body, json);
+    let mut bodies = run(ctx, body, json);
     for body in &mut bodies {
         let og_scope = ctx.start_new_scope();
         ctx.insert_var(name.clone(), Arc::new(body));
 
-        let mut nexts = RunGen::build(ctx, next, json);
+        let mut nexts = run(ctx, next, json);
         for next in &mut nexts {
             let new_scope = ctx.restore_scope(og_scope.clone());
             yield_!(out, next);
@@ -217,8 +280,8 @@ async fn run_var_def(
     bodies.end()
 }
 
-async fn run_array_lit(out: RunOut<'_>, ctx: &RunCtx, items: &Filter, json: &Json) -> RunEnd {
-    let mut items_gen = RunGen::build(ctx, items, json);
+async fn run_array_lit(out: RunOut, ctx: &RunCtx, items: &Filter, json: &Json) -> RunEnd {
+    let mut items_gen = run(ctx, items, json);
     let items = items_gen.by_ref().collect::<Vec<_>>();
     if let Some(end) = items_gen.end() {
         return Some(end);
@@ -229,7 +292,7 @@ async fn run_array_lit(out: RunOut<'_>, ctx: &RunCtx, items: &Filter, json: &Jso
 }
 
 async fn run_object_lit(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     items: &[(Filter, Filter)],
     json: &Json,
@@ -241,9 +304,9 @@ async fn run_object_lit(
         json: &Json,
     ) -> Vec<Result<(String, Json), RunEndValue>> {
         let mut pairs = Vec::new();
-        let mut keys = RunGen::build(ctx, key, json);
+        let mut keys = run(ctx, key, json);
         for key in &mut keys {
-            let mut values = RunGen::build(ctx, value, json);
+            let mut values = run(ctx, value, json);
             for value in &mut values {
                 if let Json::String(key) = &key {
                     pairs.push(Ok((key.clone(), value)));
@@ -318,7 +381,7 @@ async fn run_object_lit(
 }
 
 async fn run_project(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     term: &Filter,
     exp: &Filter,
@@ -364,10 +427,10 @@ async fn run_project(
         }
     }
 
-    let mut terms = RunGen::build(ctx, term, json);
+    let mut terms = run(ctx, term, json);
 
     for term in &mut terms {
-        let mut exps = RunGen::build(ctx, exp, json);
+        let mut exps = run(ctx, exp, json);
 
         for exp in &mut exps {
             match project(&term, &exp) {
@@ -387,7 +450,7 @@ async fn run_project(
 }
 
 async fn run_slice(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     term: &Filter,
     left: Option<&Filter>,
@@ -461,10 +524,10 @@ async fn run_slice(
         }
     }
 
-    let mut terms = RunGen::build(ctx, term, json);
+    let mut terms = run(ctx, term, json);
     for term in &mut terms {
         let mut lefts = match left {
-            Some(left) => Either::Left(RunGen::build(ctx, left, json)),
+            Some(left) => Either::Left(run(ctx, left, json)),
             None => Either::Right(std::iter::once(Json::Number(Number::Int(
                 rug::Integer::ZERO,
             )))),
@@ -472,7 +535,7 @@ async fn run_slice(
 
         for left in &mut lefts {
             let mut rights = match right {
-                Some(right) => Either::Left(RunGen::build(ctx, right, json)),
+                Some(right) => Either::Left(run(ctx, right, json)),
                 None => Either::Right(std::iter::once(Json::Number(Number::Int(match &term {
                     Json::Array(arr) => arr.len().into(),
                     Json::String(s) => s.len().into(),
@@ -501,7 +564,7 @@ async fn run_slice(
     None
 }
 
-async fn run_iter(out: RunOut<'_>, json: &Json) -> RunEnd {
+async fn run_iter(out: RunOut, json: &Json) -> RunEnd {
     match json {
         Json::Array(arr) => {
             for json in arr.iter().cloned() {
@@ -525,16 +588,16 @@ async fn run_iter(out: RunOut<'_>, json: &Json) -> RunEnd {
 }
 
 async fn run_pipe(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     left: &Filter,
     right: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let mut left_jsons = RunGen::build(ctx, left, json);
+    let mut left_jsons = run(ctx, left, json);
 
     for left_json in &mut left_jsons {
-        let mut right_jsons = RunGen::build(ctx, right, &left_json);
+        let mut right_jsons = run(ctx, right, &left_json);
 
         for right_json in &mut right_jsons {
             yield_!(out, right_json);
@@ -551,13 +614,13 @@ async fn run_pipe(
 }
 
 async fn run_alt(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     left: &Filter,
     right: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let mut lefts = RunGen::build(ctx, left, json);
+    let mut lefts = run(ctx, left, json);
 
     let mut has_valid_left = false;
     for left in &mut lefts {
@@ -571,7 +634,7 @@ async fn run_alt(
     }
 
     if !has_valid_left {
-        let mut rights = RunGen::build(ctx, right, json);
+        let mut rights = run(ctx, right, json);
         for right in &mut rights {
             yield_!(out, right);
         }
@@ -584,20 +647,20 @@ async fn run_alt(
 }
 
 async fn run_try_catch(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     try_: &Filter,
     catch_: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let mut trys = RunGen::build(ctx, try_, json);
+    let mut trys = run(ctx, try_, json);
 
     for json in &mut trys {
         yield_!(out, json);
     }
     match trys.end() {
         Some(RunEndValue::Error(err)) => {
-            let mut catches = RunGen::build(ctx, catch_, &err);
+            let mut catches = run(ctx, catch_, &err);
 
             for json in &mut catches {
                 yield_!(out, json);
@@ -614,13 +677,13 @@ async fn run_try_catch(
 }
 
 async fn run_comma(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     left: &Filter,
     right: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let mut left_jsons = RunGen::build(ctx, left, json);
+    let mut left_jsons = run(ctx, left, json);
 
     for left_json in &mut left_jsons {
         yield_!(out, left_json);
@@ -629,7 +692,7 @@ async fn run_comma(
         return Some(end);
     }
 
-    let mut right_jsons = RunGen::build(ctx, right, json);
+    let mut right_jsons = run(ctx, right, json);
 
     for right_json in &mut right_jsons {
         yield_!(out, right_json);
@@ -642,18 +705,18 @@ async fn run_comma(
 }
 
 async fn run_if_else(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     cond: &Filter,
     then: &Filter,
     else_: &Filter,
     json: &Json,
 ) -> RunEnd {
-    let mut conds = RunGen::build(ctx, cond, json);
+    let mut conds = run(ctx, cond, json);
 
     for cond in &mut conds {
         let filter_branch = if cond.to_bool() { then } else { else_ };
-        let mut branches = RunGen::build(ctx, filter_branch, json);
+        let mut branches = run(ctx, filter_branch, json);
 
         for branch in &mut branches {
             yield_!(out, branch);
@@ -670,7 +733,7 @@ async fn run_if_else(
 }
 
 async fn run_reduce(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     exp: &Filter,
     name: &Arc<str>,
@@ -681,17 +744,17 @@ async fn run_reduce(
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
 
-    let mut bases = RunGen::build(ctx, init, json);
+    let mut bases = run(ctx, init, json);
     for base in &mut bases {
         let mut acc = base;
 
-        let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
+        let mut stream = run(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
         for val in &mut stream {
             acc = {
                 let og_scope = ctx.start_new_scope();
                 ctx.insert_var(name.clone(), Arc::new(val));
 
-                let mut updates = RunGen::build(ctx, update, &acc);
+                let mut updates = run(ctx, update, &acc);
                 let new_acc = updates.by_ref().fold(Json::Null, |_, j| j);
 
                 ctx.restore_scope(og_scope);
@@ -714,7 +777,7 @@ async fn run_reduce(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_foreach(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     exp: &Filter,
     name: &Arc<str>,
@@ -726,11 +789,11 @@ async fn run_foreach(
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
 
-    let mut bases = RunGen::build(ctx, init, json);
+    let mut bases = run(ctx, init, json);
     for base in &mut bases {
         let mut acc = base;
 
-        let mut stream = RunGen::build(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
+        let mut stream = run(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
         for val in &mut stream {
             acc = {
                 let og_scope = ctx.start_new_scope();
@@ -738,11 +801,11 @@ async fn run_foreach(
 
                 let mut new_acc = Json::Null;
 
-                let mut updates = RunGen::build(ctx, update, &acc);
+                let mut updates = run(ctx, update, &acc);
                 for update in &mut updates {
                     new_acc = update;
 
-                    let mut extracts = RunGen::build(ctx, extract, &new_acc);
+                    let mut extracts = run(ctx, extract, &new_acc);
                     for extract in &mut extracts {
                         let new_scope = ctx.restore_scope(og_scope.clone());
                         yield_!(out, extract);
@@ -772,7 +835,7 @@ async fn run_foreach(
 }
 
 async fn run_func_def(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     name: &Arc<str>,
     params: &[FuncParam],
@@ -810,7 +873,7 @@ async fn run_func_def(
         }),
     );
 
-    let mut nexts = RunGen::build(ctx, next, json);
+    let mut nexts = run(ctx, next, json);
     for next in &mut nexts {
         let new_scope = ctx.restore_scope(og_scope.clone());
         yield_!(out, next);
@@ -827,7 +890,7 @@ async fn run_func_def(
 }
 
 async fn run_func_call(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     name: &Arc<str>,
     args: &[Filter],
@@ -841,7 +904,7 @@ async fn run_func_call(
         ctx.start_new_scope();
         ctx.scope.borrow().lock().unwrap().is_top_level = false;
 
-        for (param, arg) in zip(func.params.iter(), args) {
+        for (param, arg) in std::iter::zip(func.params.iter(), args) {
             ctx.insert_func(
                 param.clone(),
                 0,
@@ -854,7 +917,7 @@ async fn run_func_call(
         }
 
         let ret = {
-            let mut results = RunGen::build(ctx, &func.body, json);
+            let mut results = run(ctx, &func.body, json);
             for result in &mut results {
                 let new_scope = ctx.restore_scope(og_scope.clone());
                 yield_!(out, result);
@@ -873,7 +936,7 @@ async fn run_func_call(
 }
 
 async fn run_label(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     label: &Arc<str>,
     then: &Filter,
@@ -882,7 +945,7 @@ async fn run_label(
     let og_scope = ctx.start_new_scope();
     ctx.insert_label(label.clone());
 
-    let mut results = RunGen::build(ctx, then, json);
+    let mut results = run(ctx, then, json);
     for result in &mut results {
         let new_scope = ctx.restore_scope(og_scope.clone());
         yield_!(out, result);
@@ -908,7 +971,7 @@ async fn run_break(ctx: &RunCtx, label: &Arc<str>) -> RunEnd {
     }
 }
 
-async fn run_loc(out: RunOut<'_>, file: &str, line: usize) -> RunEnd {
+async fn run_loc(out: RunOut, file: &str, line: usize) -> RunEnd {
     yield_!(
         out,
         Json::Object(HashMap::from([
@@ -921,11 +984,11 @@ async fn run_loc(out: RunOut<'_>, file: &str, line: usize) -> RunEnd {
 
 // ------------------- Error Utils --------------------- //
 
-pub(crate) fn str_error(s: String) -> RunEndValue {
+fn str_error(s: String) -> RunEndValue {
     RunEndValue::Error(Json::String(s))
 }
 
-pub(crate) fn json_fmt_error(json: &Json) -> String {
+fn json_fmt_error(json: &Json) -> String {
     format!("{} ({})", json_fmt_type(json), json_fmt_bounded(json))
 }
 

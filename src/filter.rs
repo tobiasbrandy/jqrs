@@ -1,7 +1,5 @@
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 
-use run::{RunCtx, RunGen};
-
 use crate::{json::Json, lexer::LexSource, math::Number};
 
 mod lexer;
@@ -67,8 +65,8 @@ pub enum Filter {
     Loc(Arc<str>, usize), // $__loc__
 }
 impl Filter {
-    pub fn run<'a>(&'a self, ctx: &'a RunCtx, json: &'a Json) -> RunGen<'a> {
-        RunGen::build(ctx, self, json)
+    pub fn run<'a>(&'a self, ctx: &'a run::RunCtx, json: &'a Json) -> run::RunGen<impl std::future::Future<Output = run::RunEnd> + 'a> {
+        run::run(ctx, self, json)
     }
 
     pub fn string(s: String) -> Self {

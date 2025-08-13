@@ -9,16 +9,16 @@ use rug::{float::Round, Integer};
 
 use crate::{
     filter::{
-        run::{json_fmt_error, str_error, FuncId, Scope},
+        run::{json_fmt_error, run, str_error, yield_, FuncId, Scope},
         Filter,
     },
     json::Json,
     math::Number,
 };
 
-use super::{yield_, FuncDef, RunCtx, RunEnd, RunFile, RunGen, RunOut, RunValue};
+use super::{FuncDef, RunCtx, RunEnd, RunFile, RunOut, RunValue};
 
-pub static JQ_BUILTINS: LazyLock<ImHashMap<FuncId, Arc<FuncDef>>> = LazyLock::new(|| {
+pub(in super) static JQ_BUILTINS: LazyLock<ImHashMap<FuncId, Arc<FuncDef>>> = LazyLock::new(|| {
     let ctx = RunCtx {
         file: RunFile::Module("builtins.jq".to_string()),
         scope: RefCell::new(Arc::new(Mutex::new(Scope {
@@ -38,10 +38,10 @@ pub static JQ_BUILTINS: LazyLock<ImHashMap<FuncId, Arc<FuncDef>>> = LazyLock::ne
     ctx.scope.into_inner().lock().unwrap().funcs.clone()
 });
 
-pub async fn run_rs_builtin(
+pub(in super) async fn run_rs_builtin(
     name: &str,
     argc: usize,
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     args: &[Filter],
     json: &Json,
@@ -82,7 +82,7 @@ pub async fn run_rs_builtin(
 // -------------- Utils -------------- //
 
 async fn nullary(
-    out: RunOut<'_>,
+    out: RunOut,
     _ctx: &RunCtx,
     args: &[Filter],
     json: &Json,
@@ -99,7 +99,7 @@ async fn nullary(
 }
 
 async fn unary(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     args: &[Filter],
     json: &Json,
@@ -110,7 +110,7 @@ async fn unary(
         _ => panic!("Unary functions take one argument"),
     };
 
-    let mut a_gen = RunGen::build(ctx, a, json);
+    let mut a_gen = run(ctx, a, json);
     for a in &mut a_gen {
         match f(&a, json) {
             Ok(val) => yield_!(out, val),
@@ -125,7 +125,7 @@ async fn unary(
 }
 
 async fn binary(
-    out: RunOut<'_>,
+    out: RunOut,
     ctx: &RunCtx,
     args: &[Filter],
     json: &Json,
@@ -136,9 +136,9 @@ async fn binary(
         _ => panic!("Binary functions take two arguments"),
     };
 
-    let mut b_gen = RunGen::build(ctx, b, json);
+    let mut b_gen = run(ctx, b, json);
     for b in &mut b_gen {
-        let mut a_gen = RunGen::build(ctx, a, json);
+        let mut a_gen = run(ctx, a, json);
         for a in &mut a_gen {
             match f(&a, &b, json) {
                 Ok(val) => yield_!(out, val),
@@ -158,17 +158,17 @@ async fn binary(
 
 // -------------- Builtins -------------- //
 
-async fn empty(_: RunOut<'_>, _: &RunCtx, args: &[Filter], _: &Json) -> RunEnd {
+async fn empty(_: RunOut, _: &RunCtx, args: &[Filter], _: &Json) -> RunEnd {
     assert!(args.is_empty(), "Nullary functions take no arguments");
     None
 }
 
-async fn not(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn not(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     nullary(out, ctx, args, json, |json| Ok(Json::Bool(!json.to_bool()))).await
 }
 
-async fn range(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    async fn range(out: &RunOut<'_>, start: &Json, end: &Json) -> RunEnd {
+async fn range(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+    async fn range(out: &RunOut, start: &Json, end: &Json) -> RunEnd {
         match (start, end) {
             (Json::Number(start), Json::Number(end)) => {
                 if start.is_nan() {
@@ -218,9 +218,9 @@ async fn range(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> R
         _ => panic!("Binary functions take two arguments"),
     };
 
-    let mut a_gen = RunGen::build(ctx, a, json);
+    let mut a_gen = run(ctx, a, json);
     for a in &mut a_gen {
-        let mut b_gen = RunGen::build(ctx, b, json);
+        let mut b_gen = run(ctx, b, json);
         for b in &mut b_gen {
             if let Some(end) = range(&out, &a, &b).await {
                 return Some(end);
@@ -237,7 +237,7 @@ async fn range(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> R
     None
 }
 
-async fn plus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn plus(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l + r)),
         (Json::Array(l), Json::Array(r)) => Ok(Json::Array([l.as_slice(), r.as_slice()].concat())),
@@ -258,7 +258,7 @@ async fn plus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> Ru
     .await
 }
 
-async fn negate(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn negate(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     unary(out, ctx, args, json, |val, _| match val {
         Json::Number(n) => Ok(Json::Number(-n)),
         any => Err(str_error(format!(
@@ -269,7 +269,7 @@ async fn negate(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> 
     .await
 }
 
-async fn minus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn minus(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l - r)),
         (Json::Array(l), Json::Array(r)) => Ok(Json::Array(
@@ -284,7 +284,7 @@ async fn minus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> R
     .await
 }
 
-async fn multiply(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn multiply(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l * r)),
         (Json::String(s), Json::Number(n)) => Ok(n
@@ -317,7 +317,7 @@ async fn multiply(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -
     .await
 }
 
-async fn divide(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn divide(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (jl @ Json::Number(l), jr @ Json::Number(r)) => {
             if r.is_zero() {
@@ -350,7 +350,7 @@ async fn divide(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> 
     .await
 }
 
-async fn modulus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn modulus(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| match (l, r) {
         (jl @ Json::Number(l), jr @ Json::Number(r)) => {
             if r.is_zero() {
@@ -386,7 +386,7 @@ async fn modulus(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) ->
     .await
 }
 
-async fn equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
         Ok(Json::Bool({
             if l.is_nan() || r.is_nan() {
@@ -399,7 +399,7 @@ async fn equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> R
     .await
 }
 
-async fn not_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn not_equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
         Ok(Json::Bool({
             if l.is_nan() || r.is_nan() {
@@ -412,7 +412,7 @@ async fn not_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) 
     .await
 }
 
-async fn less(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn less(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
         Ok(Json::Bool({
             if l.is_nan() {
@@ -425,7 +425,7 @@ async fn less(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> Ru
     .await
 }
 
-async fn less_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn less_equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
         Ok(Json::Bool({
             if l.is_nan() {
@@ -438,7 +438,7 @@ async fn less_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json)
     .await
 }
 
-async fn greater(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn greater(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
         Ok(Json::Bool({
             if l.is_nan() {
@@ -451,7 +451,7 @@ async fn greater(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) ->
     .await
 }
 
-async fn greater_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn greater_equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
         Ok(Json::Bool({
             if l.is_nan() {
@@ -464,7 +464,7 @@ async fn greater_equal(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Js
     .await
 }
 
-async fn sort(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn sort(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     nullary(out, ctx, args, json, |json| match json {
         Json::Array(arr) => {
             let mut new_arr = arr.clone();
@@ -479,13 +479,13 @@ async fn sort(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> Ru
     .await
 }
 
-async fn infinite(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn infinite(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     nullary(out, ctx, args, json, |_| {
         Ok(Json::Number(Number::infinity()))
     })
     .await
 }
 
-async fn nan(out: RunOut<'_>, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn nan(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
     nullary(out, ctx, args, json, |_| Ok(Json::Number(Number::nan()))).await
 }

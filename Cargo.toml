@@ -15,7 +15,6 @@ rug = { version = "1.27", default-features = false, features = [
     "std",
 ] }
 either = { version = "1.15.0" }
-ouroboros = { version = "0.18.5" }
 thiserror = { version = "2.0.10" }
 derive_more = { version = "2.0.1", features = ["debug", "display"] }
 auto_enums = { version = "0.8.7" }
