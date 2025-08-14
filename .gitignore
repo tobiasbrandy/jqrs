@@ -3,4 +3,5 @@ target/
 .vscode/
 .idea/
 
+.plans/
 arxiv-metadata-oai-snapshot.json

@@ -207,7 +207,7 @@ pub(crate) fn run(ctx: &RunCtx, filter: &Filter, json: &Json) -> RunGen<impl Fut
             }
             Filter::Empty => None,
             Filter::Json(json) => {
-                yield_!(out, json.clone());
+                yield_!(out, json.as_ref().clone());
                 None
             }
             Filter::Var(name) => run_var(out, ctx, name).await,
@@ -854,8 +854,8 @@ async fn run_func_def(
             FuncParam::VarParam(name) => {
                 body = Filter::VarDef(
                     name.clone(),
-                    Box::new(Filter::FuncCall(name.clone(), Vec::new())),
-                    Box::new(body.clone()),
+                    Arc::new(Filter::FuncCall(name.clone(), Vec::new())),
+                    Arc::new(body.clone()),
                 );
                 param_names.push(name.clone());
             }

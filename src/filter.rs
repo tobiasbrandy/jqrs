@@ -5,8 +5,9 @@ use crate::{json::Json, lexer::LexSource, math::Number};
 mod lexer;
 pub mod parser;
 pub mod run;
+pub mod run_vm;
 
-type FilterRef = Box<Filter>;
+type FilterRef = Arc<Filter>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FuncParam {
@@ -27,7 +28,7 @@ pub enum Filter {
     // Basic
     Identity,   // .
     Empty,      // <empty>
-    Json(Json), // <json>
+    Json(Arc<Json>), // <json>
 
     // Variable
     Var(Arc<str>),                          // $<name>
@@ -70,27 +71,27 @@ impl Filter {
     }
 
     pub fn string(s: String) -> Self {
-        Self::Json(Json::String(s))
+        Self::Json(Json::String(s).into())
     }
 
     pub fn number(n: Number) -> Self {
-        Self::Json(Json::Number(n))
+        Self::Json(Json::Number(n).into())
     }
 
     pub fn bool(b: bool) -> Self {
-        Self::Json(Json::Bool(b))
+        Self::Json(Json::Bool(b).into())
     }
 
     pub fn null() -> Self {
-        Self::Json(Json::Null)
+        Self::Json(Json::Null.into())
     }
 
     pub fn array(arr: Vec<Json>) -> Self {
-        Self::Json(Json::Array(arr))
+        Self::Json(Json::Array(arr).into())
     }
 
     pub fn object(obj: HashMap<String, Json>) -> Self {
-        Self::Json(Json::Object(obj))
+        Self::Json(Json::Object(obj).into())
     }
 }
 impl std::fmt::Display for Filter {
