@@ -1,0 +1,423 @@
+use std::sync::Arc;
+
+use crate::filter::Filter;
+use crate::filter::run::RunEndValue;
+use crate::json::Json;
+use crate::math::Number;
+
+#[derive(Debug)]
+pub struct FilterRunner {
+    stack: Vec<Frame>,
+}
+impl FilterRunner {
+    pub fn new(filter: Arc<Filter>, json: Arc<Json>) -> Self {
+        Self {
+            stack: vec![Frame {
+                filter,
+                scope: Scope::default(),
+                state: FrameState::default(),
+                dot: json,
+                parent: 0,
+                closed: false,
+            }],
+        }
+    }
+}
+impl Iterator for FilterRunner {
+    type Item = Result<Arc<Json>, RunEndValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.stack.is_empty() {
+            return None;
+        }
+
+        match run(self) {
+            RunVal::Value(json) => Some(Ok(json)),
+            RunVal::EndOk => None,
+            RunVal::EndErr(err) => Some(Err(err)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct Scope {
+    // vars: im::HashMap<Arc<str>, Json>,
+    // funcs: im::HashMap<(Arc<str>, usize), VmFuncDef>,
+    // labels: im::HashSet<Arc<str>>,
+}
+
+#[derive(Debug, Clone)]
+struct Frame {
+    filter: Arc<Filter>,
+    scope: Scope,
+    state: FrameState,
+    dot: Arc<Json>,
+    parent: usize,
+    closed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+enum RunVal {
+    Value(Arc<Json>),
+    #[default]
+    EndOk,
+    EndErr(RunEndValue),
+}
+impl From<Result<Arc<Json>, RunEndValue>> for RunVal {
+    fn from(val: Result<Arc<Json>, RunEndValue>) -> Self {
+        match val {
+            Ok(json) => RunVal::Value(json),
+            Err(end) => RunVal::EndErr(end),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum StepOut {
+    Run(Arc<Filter>, Arc<Json>),
+    Yield(Arc<Json>),
+    Return(Arc<Json>),
+    Continue,
+    EndOk,
+    EndErr(RunEndValue),
+}
+impl From<RunVal> for StepOut {
+    fn from(val: RunVal) -> Self {
+        match val {
+            RunVal::Value(json) => StepOut::Yield(json),
+            RunVal::EndOk => StepOut::EndOk,
+            RunVal::EndErr(err) => StepOut::EndErr(err),
+        }
+    }
+}
+impl From<Result<Arc<Json>, RunEndValue>> for StepOut {
+    fn from(val: Result<Arc<Json>, RunEndValue>) -> Self {
+        RunVal::from(val).into()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum FrameState {
+    #[default]
+    Start,
+    Comma(CommaState),
+    Pipe(PipeState),
+    Project(ProjectState),
+}
+
+fn run(runner: &mut FilterRunner) -> RunVal {
+    let mut frame_idx = runner.stack.len() - 1;
+    let mut yielded: Option<RunVal> = None;
+
+    loop {
+        let frame = runner.stack.get_mut(frame_idx).unwrap();
+        let parent = frame.parent;
+
+        let step_output = if frame.closed {
+            StepOut::EndOk
+        } else {
+            frame_run(frame, yielded.unwrap_or_default())
+        };
+
+        yielded = match step_output {
+            StepOut::Run(filter, dot) => {
+                runner.stack.push(Frame {
+                    filter,
+                    scope: Scope::default(),
+                    state: FrameState::default(),
+                    dot,
+                    parent: frame_idx,
+                    closed: false,
+                });
+                None
+            }
+            StepOut::Yield(json) => Some(RunVal::Value(json)),
+            StepOut::Return(json) => {
+                frame.closed = true;
+                Some(RunVal::Value(json))
+            }
+            StepOut::Continue => None,
+            StepOut::EndOk => {
+                runner.stack.pop();
+                Some(RunVal::EndOk)
+            }
+            StepOut::EndErr(err) => {
+                runner.stack.pop();
+                Some(RunVal::EndErr(err))
+            }
+        };
+
+        if frame_idx == 0
+            && let Some(run_val) = yielded
+        {
+            return run_val;
+        }
+
+        frame_idx = match yielded {
+            Some(_) => parent,
+            None => runner.stack.len() - 1,
+        }
+    }
+}
+
+fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
+    macro_rules! ensure_state {
+        ($state:ident, $variant:ident($ty:ty)) => {{
+            if matches!($state, FrameState::Start) {
+                *$state = FrameState::$variant(<$ty>::default());
+            }
+            match $state {
+                FrameState::$variant(s) => s,
+                _ => unreachable!(),
+            }
+        }};
+    }
+
+    let state = &mut frame.state;
+    let dot = frame.dot.clone();
+
+    match frame.filter.as_ref() {
+        Filter::Identity => match state {
+            FrameState::Start => StepOut::Return(dot),
+            _ => unreachable!(),
+        },
+        Filter::Empty => StepOut::EndOk,
+        Filter::Json(json) => match state {
+            FrameState::Start => StepOut::Return(json.clone()),
+            _ => unreachable!(),
+        },
+        Filter::Project(term, exp) => {
+            let state = ensure_state!(state, Project(ProjectState));
+            run_project(state, dot, yielded, term.clone(), exp.clone())
+        }
+        Filter::Pipe(left, right) => {
+            let state = ensure_state!(state, Pipe(PipeState));
+            run_pipe(state, dot, yielded, left.clone(), right.clone())
+        }
+        Filter::Comma(left, right) => {
+            let state = ensure_state!(state, Comma(CommaState));
+            run_comma(state, dot, yielded, left.clone(), right.clone())
+        }
+        _ => todo!(),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum ProjectState {
+    #[default]
+    Start,
+    Term,
+    Exp {
+        term: Arc<Json>,
+    },
+}
+fn run_project(
+    state: &mut ProjectState,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    term: Arc<Filter>,
+    exp: Arc<Filter>,
+) -> StepOut {
+    fn project(term: &Json, exp: &Json) -> Result<Json, RunEndValue> {
+        match (term, exp) {
+            (Json::Object(obj), Json::String(key)) => {
+                Ok(obj.get(key).cloned().unwrap_or(Json::Null))
+            }
+            (Json::Array(arr), Json::Number(Number::Int(n))) => Ok(if n.is_negative() {
+                (n.clone() + arr.len()).to_usize()
+            } else {
+                n.to_usize()
+            }
+            .and_then(|idx| arr.get(idx))
+            .cloned()
+            .unwrap_or(Json::Null)),
+            (Json::Array(_), Json::Number(Number::Decimal(_))) => Ok(Json::Null),
+            (Json::Array(haystack), Json::Array(needle)) => Ok(Json::Array(
+                haystack
+                    .windows(needle.len())
+                    .enumerate()
+                    .filter_map(|(i, window)| {
+                        if window == needle.as_slice() {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|i| Json::Number(Number::Int(i.into())))
+                    .collect(),
+            )),
+            (Json::Null, Json::Object(_)) => Ok(Json::Null),
+            (Json::Null, Json::String(_)) => Ok(Json::Null),
+            (Json::Null, Json::Number(_)) => Ok(Json::Null),
+            (term, key) => Err(str_error(format!(
+                "Cannot index {} with {} {}",
+                json_fmt_type(term),
+                json_fmt_type(key),
+                json_fmt_bounded(key),
+            ))),
+        }
+    }
+
+    match state {
+        ProjectState::Start => {
+            *state = ProjectState::Term;
+            StepOut::Run(term, dot)
+        }
+        ProjectState::Term => match yielded {
+            RunVal::Value(term) => {
+                *state = ProjectState::Exp { term };
+                StepOut::Run(exp, dot)
+            }
+            RunVal::EndOk => StepOut::EndOk,
+            RunVal::EndErr(err) => StepOut::EndErr(err),
+        },
+        ProjectState::Exp { term } => match yielded {
+            RunVal::Value(exp) => project(term, &exp).map(Arc::new).into(),
+            RunVal::EndOk => {
+                *state = ProjectState::Term;
+                StepOut::Continue
+            }
+            RunVal::EndErr(err) => StepOut::EndErr(err),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum PipeState {
+    #[default]
+    Start,
+    Left,
+    Right,
+}
+fn run_pipe(
+    state: &mut PipeState,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    left: Arc<Filter>,
+    right: Arc<Filter>,
+) -> StepOut {
+    match state {
+        PipeState::Start => {
+            *state = PipeState::Left;
+            StepOut::Run(left, dot)
+        }
+        PipeState::Left => match yielded {
+            RunVal::Value(json) => {
+                *state = PipeState::Right;
+                StepOut::Run(right, json)
+            }
+            val => val.into(),
+        },
+        PipeState::Right => match yielded {
+            RunVal::EndOk => {
+                *state = PipeState::Left;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum CommaState {
+    #[default]
+    Start,
+    Left,
+    Right,
+}
+fn run_comma(
+    state: &mut CommaState,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    left: Arc<Filter>,
+    right: Arc<Filter>,
+) -> StepOut {
+    match state {
+        CommaState::Start => {
+            *state = CommaState::Left;
+            StepOut::Run(left, dot)
+        }
+        CommaState::Left => match yielded {
+            RunVal::EndOk => {
+                *state = CommaState::Right;
+                StepOut::Run(right, dot)
+            }
+            val => val.into(),
+        },
+        CommaState::Right => yielded.into(),
+    }
+}
+
+// ------------------- Error Utils --------------------- //
+
+fn str_error(s: String) -> RunEndValue {
+    RunEndValue::Error(Json::String(s))
+}
+
+fn json_fmt_error(json: &Json) -> String {
+    format!("{} ({})", json_fmt_type(json), json_fmt_bounded(json))
+}
+
+fn json_fmt_bounded(json: &Json) -> String {
+    const MAX_SIZE: usize = 11;
+
+    let fmt = json.format_compact();
+    if fmt.len() > MAX_SIZE {
+        let fmt = &fmt[..MAX_SIZE];
+        format!("{fmt}...")
+    } else {
+        fmt
+    }
+}
+
+fn json_fmt_type(json: &Json) -> &'static str {
+    match json {
+        Json::Object(_) => "object",
+        Json::Array(_) => "array",
+        Json::String(_) => "string",
+        Json::Number(_) => "number",
+        Json::Bool(_) => "bool",
+        Json::Null => "null",
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_run() {
+        let input = r#"
+            {
+                "a": 10,
+                "b": 20,
+                "c": 30
+            }
+        "#;
+        let filter = r#"
+            1,2,.a,3
+        "#;
+
+        let input: Arc<_> = input
+            .parse::<Json>()
+            .expect("json input parse error")
+            .into();
+        println!("{input:?}");
+
+        let filter: Arc<_> = filter.parse::<Filter>().expect("filter parse error").into();
+        println!("{filter:?}");
+
+        println!();
+
+        for result in FilterRunner::new(filter, input) {
+            match result {
+                Ok(json) => print!("{json:?}"),
+                Err(end) => match end {
+                    RunEndValue::Error(err) => println!("error: {err}"),
+                    RunEndValue::Break(br) => println!("break: {br}"),
+                    RunEndValue::Halt(hlt) => println!("halt: {hlt}"),
+                },
+            }
+        }
+    }
+}
