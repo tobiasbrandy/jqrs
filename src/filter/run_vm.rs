@@ -39,6 +39,7 @@ impl Iterator for FilterRunner {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 struct Scope {
     // vars: im::HashMap<Arc<str>, Json>,
@@ -49,6 +50,7 @@ struct Scope {
 #[derive(Debug, Clone)]
 struct Frame {
     filter: Arc<Filter>,
+    #[allow(dead_code)]
     scope: Scope,
     state: FrameState,
     dot: Arc<Json>,
@@ -138,10 +140,12 @@ fn run(runner: &mut FilterRunner) -> RunVal {
             }
             StepOut::Continue => None,
             StepOut::EndOk => {
+                // TODO: Popea hasta frame_idx inclusive
                 runner.stack.pop();
                 Some(RunVal::EndOk)
             }
             StepOut::EndErr(err) => {
+                // TODO: Popea hasta frame_idx inclusive
                 runner.stack.pop();
                 Some(RunVal::EndErr(err))
             }
@@ -218,10 +222,10 @@ fn run_project(
     term: Arc<Filter>,
     exp: Arc<Filter>,
 ) -> StepOut {
-    fn project(term: &Json, exp: &Json) -> Result<Json, RunEndValue> {
+    fn project(term: &Json, exp: &Json) -> Result<Arc<Json>, RunEndValue> {
         match (term, exp) {
             (Json::Object(obj), Json::String(key)) => {
-                Ok(obj.get(key).cloned().unwrap_or(Json::Null))
+                Ok(obj.get(key).cloned().unwrap_or(Json::arc_null()))
             }
             (Json::Array(arr), Json::Number(Number::Int(n))) => Ok(if n.is_negative() {
                 (n.clone() + arr.len()).to_usize()
@@ -230,25 +234,25 @@ fn run_project(
             }
             .and_then(|idx| arr.get(idx))
             .cloned()
-            .unwrap_or(Json::Null)),
-            (Json::Array(_), Json::Number(Number::Decimal(_))) => Ok(Json::Null),
-            (Json::Array(haystack), Json::Array(needle)) => Ok(Json::Array(
-                haystack
-                    .windows(needle.len())
-                    .enumerate()
-                    .filter_map(|(i, window)| {
-                        if window == needle.as_slice() {
-                            Some(i)
-                        } else {
-                            None
-                        }
-                    })
-                    .map(|i| Json::Number(Number::Int(i.into())))
-                    .collect(),
-            )),
-            (Json::Null, Json::Object(_)) => Ok(Json::Null),
-            (Json::Null, Json::String(_)) => Ok(Json::Null),
-            (Json::Null, Json::Number(_)) => Ok(Json::Null),
+            .unwrap_or(Json::arc_null())),
+            (Json::Array(_), Json::Number(Number::Decimal(_))) => Ok(Json::arc_null()),
+            (Json::Array(haystack), Json::Array(needle)) => {
+                let needle = needle.iter().collect::<Vec<&_>>();
+                Ok(Json::Array(
+                    haystack
+                        .iter()
+                        .collect::<Vec<&_>>()
+                        .windows(needle.len())
+                        .enumerate()
+                        .filter_map(|(i, window)| if window == needle { Some(i) } else { None })
+                        .map(|i| Json::Number(Number::Int(i.into())).into())
+                        .collect(),
+                )
+                .into())
+            }
+            (Json::Null, Json::Object(_)) => Ok(Json::arc_null()),
+            (Json::Null, Json::String(_)) => Ok(Json::arc_null()),
+            (Json::Null, Json::Number(_)) => Ok(Json::arc_null()),
             (term, key) => Err(str_error(format!(
                 "Cannot index {} with {} {}",
                 json_fmt_type(term),
@@ -272,7 +276,7 @@ fn run_project(
             RunVal::EndErr(err) => StepOut::EndErr(err),
         },
         ProjectState::Exp { term } => match yielded {
-            RunVal::Value(exp) => project(term, &exp).map(Arc::new).into(),
+            RunVal::Value(exp) => project(term, &exp).into(),
             RunVal::EndOk => {
                 *state = ProjectState::Term;
                 StepOut::Continue
@@ -351,9 +355,10 @@ fn run_comma(
 // ------------------- Error Utils --------------------- //
 
 fn str_error(s: String) -> RunEndValue {
-    RunEndValue::Error(Json::String(s))
+    RunEndValue::Error(Json::String(s.into()).into())
 }
 
+#[allow(dead_code)]
 fn json_fmt_error(json: &Json) -> String {
     format!("{} ({})", json_fmt_type(json), json_fmt_bounded(json))
 }

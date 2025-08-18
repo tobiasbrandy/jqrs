@@ -1,13 +1,11 @@
 use std::{
     cmp::Ordering,
-    collections::HashMap,
     fmt::{Debug, Display},
-    ops::Deref,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
-use fmt::{format_json, Format};
+use fmt::{Format, format_json};
 
 use crate::{lexer::LexSource, math::Number};
 
@@ -15,60 +13,69 @@ pub mod fmt;
 mod lexer;
 pub mod parser;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum JsonRef {
-    Owned(Json),
-    Shared(Arc<Json>),
-}
-impl From<Json> for JsonRef {
-    fn from(j: Json) -> Self {
-        JsonRef::Owned(j)
-    }
-}
-impl From<Arc<Json>> for JsonRef {
-    fn from(j: Arc<Json>) -> Self {
-        JsonRef::Shared(j)
-    }
-}
-impl JsonRef {
-    pub fn shareable(&mut self) -> &mut Self {
-        if let Self::Owned(j) = self {
-            *self = JsonRef::Shared(Arc::from(std::mem::replace(j, Json::Null)));
-        }
-
-        self
-    }
-}
-impl Deref for JsonRef {
-    type Target = Json;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Owned(j) => j,
-            Self::Shared(j) => j.as_ref(),
-        }
-    }
-}
-impl AsRef<Json> for JsonRef {
-    fn as_ref(&self) -> &Json {
-        self.deref()
-    }
-}
-impl std::fmt::Display for JsonRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
-}
-
 #[derive(Clone)]
 pub enum Json {
-    Object(HashMap<String, Json>),
-    Array(Vec<Json>),
-    String(String),
+    Object(im::HashMap<Arc<str>, Arc<Json>>),
+    Array(im::Vector<Arc<Json>>),
+    String(Arc<str>),
     Number(Number),
     Bool(bool),
     Null,
 }
 impl Json {
+    pub fn arc_null() -> Arc<Self> {
+        static ARC_NULL: LazyLock<Arc<Json>> = LazyLock::new(|| Arc::new(Json::Null));
+        ARC_NULL.clone()
+    }
+
+    pub fn arc_true() -> Arc<Self> {
+        static ARC_TRUE: LazyLock<Arc<Json>> = LazyLock::new(|| Arc::new(Json::Bool(true)));
+        ARC_TRUE.clone()
+    }
+
+    pub fn arc_false() -> Arc<Self> {
+        static ARC_FALSE: LazyLock<Arc<Json>> = LazyLock::new(|| Arc::new(Json::Bool(false)));
+        ARC_FALSE.clone()
+    }
+
+    pub fn arc_bool(b: bool) -> Arc<Self> {
+        if b {
+            Self::arc_true()
+        } else {
+            Self::arc_false()
+        }
+    }
+
+    pub fn arc_nan() -> Arc<Self> {
+        static ARC_NAN: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::Number(Number::nan())));
+        ARC_NAN.clone()
+    }
+
+    pub fn arc_infinity() -> Arc<Self> {
+        static ARC_INFINITY: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::Number(Number::infinity())));
+        ARC_INFINITY.clone()
+    }
+
+    pub fn arc_empty_array() -> Arc<Self> {
+        static ARC_EMPTY_ARRAY: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::Array(im::Vector::new())));
+        ARC_EMPTY_ARRAY.clone()
+    }
+
+    pub fn arc_empty_object() -> Arc<Self> {
+        static ARC_EMPTY_OBJECT: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::Object(im::HashMap::new())));
+        ARC_EMPTY_OBJECT.clone()
+    }
+
+    pub fn arc_empty_string() -> Arc<Self> {
+        static ARC_EMPTY_STRING: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::String("".into())));
+        ARC_EMPTY_STRING.clone()
+    }
+
     pub fn parser(source: LexSource) -> parser::JsonParser {
         parser::JsonParser::new(source)
     }

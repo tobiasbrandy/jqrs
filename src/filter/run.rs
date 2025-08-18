@@ -2,11 +2,8 @@ mod builtins;
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
     sync::{Arc, Mutex},
 };
-
-use im::{HashMap as ImHashMap, HashSet as ImHashSet};
 
 use either::Either;
 
@@ -18,23 +15,23 @@ use super::{Filter, FuncParam};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEndValue {
-    Error(Json),
+    Error(Arc<Json>),
     Break(Arc<str>),
     Halt(Arc<str>),
 }
 pub type RunEnd = Option<RunEndValue>;
 
-pub type RunValue = Result<Json, RunEndValue>;
+pub type RunValue = Result<Arc<Json>, RunEndValue>;
 
 pub type FuncId = (Arc<str>, usize);
 
 // ------------------- Generator API & Polyfills --------------------- //
 
-type RunOut = genawaiter::rc::Co<Json>;
+type RunOut = genawaiter::rc::Co<Arc<Json>>;
 
 /// Generator with iterator semantics and an end value
 pub struct RunGen<F: Future<Output = RunEnd>> {
-    run_gen: genawaiter::rc::Gen<Json, (), F>,
+    run_gen: genawaiter::rc::Gen<Arc<Json>, (), F>,
     end: RunEnd,
 }
 impl<F: Future<Output = RunEnd>> RunGen<F> {
@@ -45,7 +42,7 @@ impl<F: Future<Output = RunEnd>> RunGen<F> {
         }
     }
 
-    pub fn resume(&mut self) -> genawaiter::GeneratorState<Json, RunEnd> {
+    pub fn resume(&mut self) -> genawaiter::GeneratorState<Arc<Json>, RunEnd> {
         self.run_gen.resume()
     }
 
@@ -54,7 +51,7 @@ impl<F: Future<Output = RunEnd>> RunGen<F> {
     }
 }
 impl<F: Future<Output = RunEnd>> genawaiter::Coroutine for RunGen<F> {
-    type Yield = Json;
+    type Yield = Arc<Json>;
     type Resume = ();
     type Return = F::Output;
 
@@ -66,7 +63,7 @@ impl<F: Future<Output = RunEnd>> genawaiter::Coroutine for RunGen<F> {
     }
 }
 impl<F: Future<Output = RunEnd>> Iterator for RunGen<F> {
-    type Item = Json;
+    type Item = Arc<Json>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.resume() {
@@ -97,9 +94,9 @@ struct FuncDef {
 
 #[derive(Debug, Clone, Default)]
 struct Scope {
-    vars: ImHashMap<Arc<str>, Arc<Json>>,
-    funcs: ImHashMap<FuncId, Arc<FuncDef>>,
-    labels: ImHashSet<Arc<str>>,
+    vars: im::HashMap<Arc<str>, Arc<Json>>,
+    funcs: im::HashMap<FuncId, Arc<FuncDef>>,
+    labels: im::HashSet<Arc<str>>,
     is_top_level: bool,
 }
 
@@ -120,22 +117,22 @@ impl Default for RunCtx {
         Self {
             file: RunFile::Main,
             scope: RefCell::new(Arc::new(Mutex::new(Scope {
-                vars: ImHashMap::new(),
+                vars: im::HashMap::new(),
                 funcs: builtins::JQ_BUILTINS.clone(),
-                labels: ImHashSet::new(),
+                labels: im::HashSet::new(),
                 is_top_level: true,
             }))),
         }
     }
 }
 impl RunCtx {
-    pub fn new(vars: HashMap<Arc<str>, Json>) -> Self {
+    pub fn new(vars: im::HashMap<Arc<str>, Arc<Json>>) -> Self {
         Self {
             file: RunFile::Main,
             scope: RefCell::new(Arc::new(Mutex::new(Scope {
-                vars: vars.into_iter().map(|(k, v)| (k, Arc::new(v))).collect(),
+                vars,
                 funcs: builtins::JQ_BUILTINS.clone(),
-                labels: ImHashSet::new(),
+                labels: im::HashSet::new(),
                 is_top_level: true,
             }))),
         }
@@ -198,16 +195,25 @@ impl RunCtx {
 
 // ------------------- Implementation --------------------- //
 
-pub(crate) fn run(ctx: &RunCtx, filter: &Filter, json: &Json) -> RunGen<impl Future<Output = RunEnd>> {
-    async fn inner_run(out: RunOut, ctx: &RunCtx, filter: &Filter, json: &Json) -> RunEnd {
-        match filter {
+pub(crate) fn run(
+    ctx: &RunCtx,
+    filter: &Arc<Filter>,
+    json: &Arc<Json>,
+) -> RunGen<impl Future<Output = RunEnd>> {
+    async fn inner_run(
+        out: RunOut,
+        ctx: &RunCtx,
+        filter: &Arc<Filter>,
+        json: &Arc<Json>,
+    ) -> RunEnd {
+        match filter.as_ref() {
             Filter::Identity => {
                 yield_!(out, json.clone());
                 None
             }
             Filter::Empty => None,
             Filter::Json(json) => {
-                yield_!(out, json.as_ref().clone());
+                yield_!(out, json.clone());
                 None
             }
             Filter::Var(name) => run_var(out, ctx, name).await,
@@ -216,14 +222,16 @@ pub(crate) fn run(ctx: &RunCtx, filter: &Filter, json: &Json) -> RunGen<impl Fut
             Filter::ObjectLit(items) => run_object_lit(out, ctx, items, json).await,
             Filter::Project(term, key) => run_project(out, ctx, term, key, json).await,
             Filter::Slice(term, left, right) => {
-                run_slice(out, ctx, term, left.as_deref(), right.as_deref(), json).await
+                run_slice(out, ctx, term, left.as_ref(), right.as_ref(), json).await
             }
             Filter::Iter => run_iter(out, json).await,
             Filter::Pipe(left, right) => run_pipe(out, ctx, left, right, json).await,
             Filter::Alt(left, right) => run_alt(out, ctx, left, right, json).await,
             Filter::TryCatch(try_, catch_) => run_try_catch(out, ctx, try_, catch_, json).await,
             Filter::Comma(left, right) => run_comma(out, ctx, left, right, json).await,
-            Filter::IfElse(cond, then, else_) => run_if_else(out, ctx, cond, then, else_, json).await,
+            Filter::IfElse(cond, then, else_) => {
+                run_if_else(out, ctx, cond, then, else_, json).await
+            }
             Filter::Reduce(exp, name, init, update) => {
                 run_reduce(out, ctx, exp, name, init, update, json).await
             }
@@ -243,9 +251,9 @@ pub(crate) fn run(ctx: &RunCtx, filter: &Filter, json: &Json) -> RunGen<impl Fut
     RunGen::new(|co| inner_run(co, ctx, filter, json))
 }
 
-async fn run_var(out: RunOut, ctx: &RunCtx, name: &str) -> RunEnd {
+async fn run_var(out: RunOut, ctx: &RunCtx, name: &Arc<str>) -> RunEnd {
     match ctx.get_var(name) {
-        Some(val) => yield_!(out, (*val).clone()),
+        Some(val) => yield_!(out, val.clone()),
         None => return Some(str_error(format!("${name} is not defined"))),
     }
     None
@@ -255,14 +263,14 @@ async fn run_var_def(
     out: RunOut,
     ctx: &RunCtx,
     name: &Arc<str>,
-    body: &Filter,
-    next: &Filter,
-    json: &Json,
+    body: &Arc<Filter>,
+    next: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     let mut bodies = run(ctx, body, json);
     for body in &mut bodies {
         let og_scope = ctx.start_new_scope();
-        ctx.insert_var(name.clone(), Arc::new(body));
+        ctx.insert_var(name.clone(), body.clone());
 
         let mut nexts = run(ctx, next, json);
         for next in &mut nexts {
@@ -280,35 +288,36 @@ async fn run_var_def(
     bodies.end()
 }
 
-async fn run_array_lit(out: RunOut, ctx: &RunCtx, items: &Filter, json: &Json) -> RunEnd {
+async fn run_array_lit(out: RunOut, ctx: &RunCtx, items: &Arc<Filter>, json: &Arc<Json>) -> RunEnd {
     let mut items_gen = run(ctx, items, json);
-    let items = items_gen.by_ref().collect::<Vec<_>>();
+    let items = items_gen.by_ref().collect::<im::Vector<_>>();
     if let Some(end) = items_gen.end() {
         return Some(end);
     }
 
-    yield_!(out, Json::Array(items));
+    yield_!(out, Json::Array(items).into());
     None
 }
 
 async fn run_object_lit(
     out: RunOut,
     ctx: &RunCtx,
-    items: &[(Filter, Filter)],
-    json: &Json,
+    items: &[(Arc<Filter>, Arc<Filter>)],
+    json: &Arc<Json>,
 ) -> RunEnd {
+    #[allow(clippy::type_complexity)]
     fn build_pairs(
         ctx: &RunCtx,
-        key: &Filter,
-        value: &Filter,
-        json: &Json,
-    ) -> Vec<Result<(String, Json), RunEndValue>> {
+        key: &Arc<Filter>,
+        value: &Arc<Filter>,
+        json: &Arc<Json>,
+    ) -> Vec<Result<(Arc<str>, Arc<Json>), RunEndValue>> {
         let mut pairs = Vec::new();
         let mut keys = run(ctx, key, json);
         for key in &mut keys {
             let mut values = run(ctx, value, json);
             for value in &mut values {
-                if let Json::String(key) = &key {
+                if let Json::String(key) = key.as_ref() {
                     pairs.push(Ok((key.clone(), value)));
                 } else {
                     pairs.push(Err(str_error(format!(
@@ -330,13 +339,14 @@ async fn run_object_lit(
         pairs
     }
 
+    #[allow(clippy::type_complexity)]
     fn cartesian_product(
-        pair_options: &[Vec<Result<(String, Json), RunEndValue>>],
-    ) -> (Vec<HashMap<String, Json>>, RunEnd) {
+        pair_options: &[Vec<Result<(Arc<str>, Arc<Json>), RunEndValue>>],
+    ) -> (Vec<im::HashMap<Arc<str>, Arc<Json>>>, RunEnd) {
         fn rec(
-            pair_options: &[Vec<Result<(String, Json), RunEndValue>>],
-            current: HashMap<String, Json>,
-            result: &mut Vec<HashMap<String, Json>>,
+            pair_options: &[Vec<Result<(Arc<str>, Arc<Json>), RunEndValue>>],
+            current: im::HashMap<Arc<str>, Arc<Json>>,
+            result: &mut Vec<im::HashMap<Arc<str>, Arc<Json>>>,
         ) -> RunEnd {
             if pair_options.is_empty() {
                 result.push(current);
@@ -362,7 +372,7 @@ async fn run_object_lit(
         }
 
         let mut result = Vec::new();
-        let err = rec(pair_options, HashMap::new(), &mut result);
+        let err = rec(pair_options, im::HashMap::new(), &mut result);
         (result, err)
     }
 
@@ -374,7 +384,7 @@ async fn run_object_lit(
     let (products, end) = cartesian_product(&pair_options);
 
     for obj in products {
-        yield_!(out, Json::Object(obj));
+        yield_!(out, Json::Object(obj).into());
     }
 
     end
@@ -383,14 +393,14 @@ async fn run_object_lit(
 async fn run_project(
     out: RunOut,
     ctx: &RunCtx,
-    term: &Filter,
-    exp: &Filter,
-    json: &Json,
+    term: &Arc<Filter>,
+    exp: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     fn project(term: &Json, exp: &Json) -> RunValue {
         match (term, exp) {
             (Json::Object(obj), Json::String(key)) => {
-                Ok(obj.get(key).cloned().unwrap_or(Json::Null))
+                Ok(obj.get(key).cloned().unwrap_or(Json::arc_null()))
             }
             (Json::Array(arr), Json::Number(Number::Int(n))) => Ok(if n.is_negative() {
                 (n.clone() + arr.len()).to_usize()
@@ -399,25 +409,25 @@ async fn run_project(
             }
             .and_then(|idx| arr.get(idx))
             .cloned()
-            .unwrap_or(Json::Null)),
-            (Json::Array(_), Json::Number(Number::Decimal(_))) => Ok(Json::Null),
-            (Json::Array(haystack), Json::Array(needle)) => Ok(Json::Array(
-                haystack
-                    .windows(needle.len())
-                    .enumerate()
-                    .filter_map(|(i, window)| {
-                        if window == needle.as_slice() {
-                            Some(i)
-                        } else {
-                            None
-                        }
-                    })
-                    .map(|i| Json::Number(Number::Int(i.into())))
-                    .collect(),
-            )),
-            (Json::Null, Json::Object(_)) => Ok(Json::Null),
-            (Json::Null, Json::String(_)) => Ok(Json::Null),
-            (Json::Null, Json::Number(_)) => Ok(Json::Null),
+            .unwrap_or(Json::arc_null())),
+            (Json::Array(_), Json::Number(Number::Decimal(_))) => Ok(Json::arc_null()),
+            (Json::Array(haystack), Json::Array(needle)) => {
+                let needle = needle.iter().collect::<Vec<&_>>();
+                Ok(Json::Array(
+                    haystack
+                        .iter()
+                        .collect::<Vec<&_>>()
+                        .windows(needle.len())
+                        .enumerate()
+                        .filter_map(|(i, window)| if window == needle { Some(i) } else { None })
+                        .map(|i| Json::Number(Number::Int(i.into())).into())
+                        .collect(),
+                )
+                .into())
+            }
+            (Json::Null, Json::Object(_)) => Ok(Json::arc_null()),
+            (Json::Null, Json::String(_)) => Ok(Json::arc_null()),
+            (Json::Null, Json::Number(_)) => Ok(Json::arc_null()),
             (term, key) => Err(str_error(format!(
                 "Cannot index {} with {} {}",
                 json_fmt_type(term),
@@ -452,10 +462,10 @@ async fn run_project(
 async fn run_slice(
     out: RunOut,
     ctx: &RunCtx,
-    term: &Filter,
-    left: Option<&Filter>,
-    right: Option<&Filter>,
-    json: &Json,
+    term: &Arc<Filter>,
+    left: Option<&Arc<Filter>>,
+    right: Option<&Arc<Filter>>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     fn num_to_idx(n: &Number, len: usize, round: rug::float::Round) -> Option<usize> {
         fn cycle_idx(n: &rug::Integer, len: usize) -> usize {
@@ -486,33 +496,33 @@ async fn run_slice(
                 let len = arr.len();
                 let l = match num_to_idx(l, len, rug::float::Round::Down) {
                     Some(l) => l,
-                    None => return Ok(Json::Null),
+                    None => return Ok(Json::arc_null()),
                 };
                 let r = match num_to_idx(r, len, rug::float::Round::Up) {
                     Some(r) => r,
-                    None => return Ok(Json::Null),
+                    None => return Ok(Json::arc_null()),
                 };
 
                 if r < l {
-                    return Ok(Json::Array(vec![]));
+                    return Ok(Json::arc_empty_array());
                 }
 
-                Ok(Json::Array(arr[l..r].to_vec()))
+                Ok(Json::Array(arr.clone().slice(l..r)).into())
             }
             (Json::String(s), Json::Number(l), Json::Number(r)) => {
                 let len = s.len();
                 let l = match num_to_idx(l, len, rug::float::Round::Down) {
                     Some(l) => l,
-                    None => return Ok(Json::Null),
+                    None => return Ok(Json::arc_null()),
                 };
                 let r = match num_to_idx(r, len, rug::float::Round::Up) {
                     Some(r) => r,
-                    None => return Ok(Json::Null),
+                    None => return Ok(Json::arc_null()),
                 };
 
-                Ok(Json::String(s[l..r].into()))
+                Ok(Json::String(s[l..r].into()).into())
             }
-            (Json::Null, Json::Number(_), Json::Number(_)) => Ok(Json::Null),
+            (Json::Null, Json::Number(_), Json::Number(_)) => Ok(Json::arc_null()),
             (Json::Array(_), anyl, anyr) | (Json::Null, anyl, anyr) => Err(str_error(format!(
                 "Start and end indices of an array slice must be numbers, not {} and {}",
                 json_fmt_type(anyl),
@@ -528,19 +538,22 @@ async fn run_slice(
     for term in &mut terms {
         let mut lefts = match left {
             Some(left) => Either::Left(run(ctx, left, json)),
-            None => Either::Right(std::iter::once(Json::Number(Number::Int(
-                rug::Integer::ZERO,
-            )))),
+            None => Either::Right(std::iter::once(
+                Json::Number(Number::Int(rug::Integer::ZERO)).into(),
+            )),
         };
 
         for left in &mut lefts {
             let mut rights = match right {
                 Some(right) => Either::Left(run(ctx, right, json)),
-                None => Either::Right(std::iter::once(Json::Number(Number::Int(match &term {
-                    Json::Array(arr) => arr.len().into(),
-                    Json::String(s) => s.len().into(),
-                    _ => rug::Integer::ZERO,
-                })))),
+                None => Either::Right(std::iter::once(
+                    Json::Number(Number::Int(match term.as_ref() {
+                        Json::Array(arr) => arr.len().into(),
+                        Json::String(s) => s.len().into(),
+                        _ => rug::Integer::ZERO,
+                    }))
+                    .into(),
+                )),
             };
 
             for right in &mut rights {
@@ -587,13 +600,7 @@ async fn run_iter(out: RunOut, json: &Json) -> RunEnd {
     None
 }
 
-async fn run_pipe(
-    out: RunOut,
-    ctx: &RunCtx,
-    left: &Filter,
-    right: &Filter,
-    json: &Json,
-) -> RunEnd {
+async fn run_pipe(out: RunOut, ctx: &RunCtx, left: &Arc<Filter>, right: &Arc<Filter>, json: &Arc<Json>) -> RunEnd {
     let mut left_jsons = run(ctx, left, json);
 
     for left_json in &mut left_jsons {
@@ -613,13 +620,7 @@ async fn run_pipe(
     None
 }
 
-async fn run_alt(
-    out: RunOut,
-    ctx: &RunCtx,
-    left: &Filter,
-    right: &Filter,
-    json: &Json,
-) -> RunEnd {
+async fn run_alt(out: RunOut, ctx: &RunCtx, left: &Arc<Filter>, right: &Arc<Filter>, json: &Arc<Json>) -> RunEnd {
     let mut lefts = run(ctx, left, json);
 
     let mut has_valid_left = false;
@@ -649,9 +650,9 @@ async fn run_alt(
 async fn run_try_catch(
     out: RunOut,
     ctx: &RunCtx,
-    try_: &Filter,
-    catch_: &Filter,
-    json: &Json,
+    try_: &Arc<Filter>,
+    catch_: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     let mut trys = run(ctx, try_, json);
 
@@ -679,9 +680,9 @@ async fn run_try_catch(
 async fn run_comma(
     out: RunOut,
     ctx: &RunCtx,
-    left: &Filter,
-    right: &Filter,
-    json: &Json,
+    left: &Arc<Filter>,
+    right: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     let mut left_jsons = run(ctx, left, json);
 
@@ -707,10 +708,10 @@ async fn run_comma(
 async fn run_if_else(
     out: RunOut,
     ctx: &RunCtx,
-    cond: &Filter,
-    then: &Filter,
-    else_: &Filter,
-    json: &Json,
+    cond: &Arc<Filter>,
+    then: &Arc<Filter>,
+    else_: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     let mut conds = run(ctx, cond, json);
 
@@ -735,11 +736,11 @@ async fn run_if_else(
 async fn run_reduce(
     out: RunOut,
     ctx: &RunCtx,
-    exp: &Filter,
+    exp: &Arc<Filter>,
     name: &Arc<str>,
-    init: &Filter,
-    update: &Filter,
-    json: &Json,
+    init: &Arc<Filter>,
+    update: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
@@ -748,14 +749,15 @@ async fn run_reduce(
     for base in &mut bases {
         let mut acc = base;
 
-        let mut stream = run(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
+        let default_exp_input = Json::arc_null();
+        let mut stream = run(ctx, exp, exp_input.take().unwrap_or(&default_exp_input));
         for val in &mut stream {
             acc = {
                 let og_scope = ctx.start_new_scope();
-                ctx.insert_var(name.clone(), Arc::new(val));
+                ctx.insert_var(name.clone(), val);
 
                 let mut updates = run(ctx, update, &acc);
-                let new_acc = updates.by_ref().fold(Json::Null, |_, j| j);
+                let new_acc = updates.by_ref().fold(Json::arc_null(), |_, j| j);
 
                 ctx.restore_scope(og_scope);
 
@@ -779,12 +781,12 @@ async fn run_reduce(
 async fn run_foreach(
     out: RunOut,
     ctx: &RunCtx,
-    exp: &Filter,
+    exp: &Arc<Filter>,
     name: &Arc<str>,
-    init: &Filter,
-    update: &Filter,
-    extract: &Filter,
-    json: &Json,
+    init: &Arc<Filter>,
+    update: &Arc<Filter>,
+    extract: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     // exp_input is json just the first time, then it is null
     let mut exp_input = Some(json);
@@ -793,13 +795,14 @@ async fn run_foreach(
     for base in &mut bases {
         let mut acc = base;
 
-        let mut stream = run(ctx, exp, exp_input.take().unwrap_or(&Json::Null));
+        let default_exp_input = Json::arc_null();
+        let mut stream = run(ctx, exp, exp_input.take().unwrap_or(&default_exp_input));
         for val in &mut stream {
             acc = {
                 let og_scope = ctx.start_new_scope();
-                ctx.insert_var(name.clone(), Arc::new(val));
+                ctx.insert_var(name.clone(), val.clone());
 
-                let mut new_acc = Json::Null;
+                let mut new_acc = Json::arc_null();
 
                 let mut updates = run(ctx, update, &acc);
                 for update in &mut updates {
@@ -839,9 +842,9 @@ async fn run_func_def(
     ctx: &RunCtx,
     name: &Arc<str>,
     params: &[FuncParam],
-    body: &Filter,
-    next: &Filter,
-    json: &Json,
+    body: &Arc<Filter>,
+    next: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     let mut body = body.clone();
     let mut param_names = Vec::new();
@@ -852,11 +855,11 @@ async fn run_func_def(
                 param_names.push(name.clone());
             }
             FuncParam::VarParam(name) => {
-                body = Filter::VarDef(
+                body = Arc::new(Filter::VarDef(
                     name.clone(),
                     Arc::new(Filter::FuncCall(name.clone(), Vec::new())),
-                    Arc::new(body.clone()),
-                );
+                    body.clone(),
+                ));
                 param_names.push(name.clone());
             }
         }
@@ -869,7 +872,7 @@ async fn run_func_def(
         Arc::new(FuncDef {
             scope: ctx.scope.borrow().clone(),
             params: param_names,
-            body: Arc::new(body),
+            body,
         }),
     );
 
@@ -893,8 +896,8 @@ async fn run_func_call(
     out: RunOut,
     ctx: &RunCtx,
     name: &Arc<str>,
-    args: &[Filter],
-    json: &Json,
+    args: &[Arc<Filter>],
+    json: &Arc<Json>,
 ) -> RunEnd {
     let argc = args.len();
 
@@ -911,7 +914,7 @@ async fn run_func_call(
                 Arc::new(FuncDef {
                     scope: og_scope.clone(),
                     params: vec![],
-                    body: Arc::new(arg.clone()),
+                    body: arg.clone(),
                 }),
             );
         }
@@ -939,8 +942,8 @@ async fn run_label(
     out: RunOut,
     ctx: &RunCtx,
     label: &Arc<str>,
-    then: &Filter,
-    json: &Json,
+    then: &Arc<Filter>,
+    json: &Arc<Json>,
 ) -> RunEnd {
     let og_scope = ctx.start_new_scope();
     ctx.insert_label(label.clone());
@@ -974,10 +977,10 @@ async fn run_break(ctx: &RunCtx, label: &Arc<str>) -> RunEnd {
 async fn run_loc(out: RunOut, file: &str, line: usize) -> RunEnd {
     yield_!(
         out,
-        Json::Object(HashMap::from([
-            ("file".into(), Json::String(file.into())),
-            ("line".into(), Json::Number(Number::Int(line.into()))),
-        ]))
+        Json::Object(im::HashMap::from(&[
+            ("file".into(), Json::String(file.into()).into()),
+            ("line".into(), Json::Number(Number::Int(line.into())).into()),
+        ][..])).into()
     );
     None
 }
@@ -985,7 +988,7 @@ async fn run_loc(out: RunOut, file: &str, line: usize) -> RunEnd {
 // ------------------- Error Utils --------------------- //
 
 fn str_error(s: String) -> RunEndValue {
-    RunEndValue::Error(Json::String(s))
+    RunEndValue::Error(Json::String(s.into()).into())
 }
 
 fn json_fmt_error(json: &Json) -> String {
@@ -1031,10 +1034,10 @@ mod test {
             square_evens
         "#;
 
-        let input: Json = input.parse().expect("json input parse error");
+        let input: Arc<_> = input.parse::<Json>().expect("json input parse error").into();
         println!("{input:?}");
 
-        let filter: Filter = filter.parse().expect("filter parse error");
+        let filter: Arc<_> = filter.parse::<Filter>().expect("filter parse error").into();
         println!("{filter:?}");
 
         let ctx = RunCtx::default();

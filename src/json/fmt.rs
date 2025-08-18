@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::{str::FromStr, sync::Arc};
 
 use either::Either;
 
@@ -249,7 +249,7 @@ fn encode_whitespace(
 }
 
 fn format_array(
-    arr: &[Json],
+    arr: &im::Vector<Arc<Json>>,
     config @ Config {
         item_sep, colors, ..
     }: &Config,
@@ -284,7 +284,7 @@ fn format_array(
 }
 
 fn format_object(
-    map: &HashMap<String, Json>,
+    map: &im::HashMap<Arc<str>, Arc<Json>>,
     config @ Config {
         sort,
         item_sep,

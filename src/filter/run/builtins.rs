@@ -1,16 +1,14 @@
 use std::{
     cell::RefCell,
-    collections::HashMap,
     sync::{Arc, LazyLock, Mutex},
 };
 
-use im::{HashMap as ImHashMap, HashSet as ImHashSet};
-use rug::{float::Round, Integer};
+use rug::{Integer, float::Round};
 
 use crate::{
     filter::{
-        run::{json_fmt_error, run, str_error, yield_, FuncId, Scope},
         Filter,
+        run::{FuncId, Scope, json_fmt_error, run, str_error, yield_},
     },
     json::Json,
     math::Number,
@@ -18,33 +16,34 @@ use crate::{
 
 use super::{FuncDef, RunCtx, RunEnd, RunFile, RunOut, RunValue};
 
-pub(in super) static JQ_BUILTINS: LazyLock<ImHashMap<FuncId, Arc<FuncDef>>> = LazyLock::new(|| {
+pub(super) static JQ_BUILTINS: LazyLock<im::HashMap<FuncId, Arc<FuncDef>>> = LazyLock::new(|| {
     let ctx = RunCtx {
         file: RunFile::Module("builtins.jq".to_string()),
         scope: RefCell::new(Arc::new(Mutex::new(Scope {
-            vars: ImHashMap::new(),
-            funcs: ImHashMap::new(),
-            labels: ImHashSet::new(),
+            vars: im::HashMap::new(),
+            funcs: im::HashMap::new(),
+            labels: im::HashSet::new(),
             is_top_level: true,
         }))),
     };
 
-    include_str!("builtins.jq")
+    let filter: Arc<_> = include_str!("builtins.jq")
         .parse::<Filter>()
         .expect("Error parsing jq builtins")
-        .run(&ctx, &Json::Null)
-        .last();
+        .into();
+
+    filter.run(&ctx, &Json::arc_null()).last();
 
     ctx.scope.into_inner().lock().unwrap().funcs.clone()
 });
 
-pub(in super) async fn run_rs_builtin(
+pub(super) async fn run_rs_builtin(
     name: &str,
     argc: usize,
     out: RunOut,
     ctx: &RunCtx,
-    args: &[Filter],
-    json: &Json,
+    args: &[Arc<Filter>],
+    json: &Arc<Json>,
 ) -> RunEnd {
     macro_rules! dispatch {
         ($( ($name:literal, $argc:literal) => $func:ident ),+ $(,)? ) => {{
@@ -84,9 +83,9 @@ pub(in super) async fn run_rs_builtin(
 async fn nullary(
     out: RunOut,
     _ctx: &RunCtx,
-    args: &[Filter],
-    json: &Json,
-    f: fn(&Json) -> RunValue,
+    args: &[Arc<Filter>],
+    json: &Arc<Json>,
+    f: fn(&Arc<Json>) -> RunValue,
 ) -> RunEnd {
     assert!(args.is_empty(), "Nullary functions take no arguments");
 
@@ -101,9 +100,9 @@ async fn nullary(
 async fn unary(
     out: RunOut,
     ctx: &RunCtx,
-    args: &[Filter],
-    json: &Json,
-    f: fn(&Json, &Json) -> RunValue,
+    args: &[Arc<Filter>],
+    json: &Arc<Json>,
+    f: fn(&Arc<Json>, &Arc<Json>) -> RunValue,
 ) -> RunEnd {
     let a = match args {
         [a] => a,
@@ -127,9 +126,9 @@ async fn unary(
 async fn binary(
     out: RunOut,
     ctx: &RunCtx,
-    args: &[Filter],
-    json: &Json,
-    f: fn(&Json, &Json, &Json) -> RunValue,
+    args: &[Arc<Filter>],
+    json: &Arc<Json>,
+    f: fn(&Arc<Json>, &Arc<Json>, &Arc<Json>) -> RunValue,
 ) -> RunEnd {
     let (a, b) = match args {
         [a, b] => (a, b),
@@ -158,23 +157,26 @@ async fn binary(
 
 // -------------- Builtins -------------- //
 
-async fn empty(_: RunOut, _: &RunCtx, args: &[Filter], _: &Json) -> RunEnd {
+async fn empty(_: RunOut, _: &RunCtx, args: &[Arc<Filter>], _: &Arc<Json>) -> RunEnd {
     assert!(args.is_empty(), "Nullary functions take no arguments");
     None
 }
 
-async fn not(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    nullary(out, ctx, args, json, |json| Ok(Json::Bool(!json.to_bool()))).await
+async fn not(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    nullary(out, ctx, args, json, |json| {
+        Ok(Json::arc_bool(!json.to_bool()))
+    })
+    .await
 }
 
-async fn range(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    async fn range(out: &RunOut, start: &Json, end: &Json) -> RunEnd {
-        match (start, end) {
+async fn range(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    async fn range(out: &RunOut, start: &Arc<Json>, end: &Arc<Json>) -> RunEnd {
+        match (start.as_ref(), end.as_ref()) {
             (Json::Number(start), Json::Number(end)) => {
                 if start.is_nan() {
                     // Infinite null
                     loop {
-                        yield_!(out, Json::Number(Number::nan()));
+                        yield_!(out, Json::arc_nan());
                     }
                 }
 
@@ -183,7 +185,7 @@ async fn range(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEn
                 if end.is_nan() || end.is_pos_infinite() {
                     // Infinite
                     loop {
-                        yield_!(out, Json::Number(curr.clone()));
+                        yield_!(out, Json::Number(curr.clone()).into());
                         curr.inc_mut();
                     }
                 }
@@ -191,7 +193,7 @@ async fn range(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEn
                 if start.is_neg_infinite() {
                     // Infinite neg_infinite
                     loop {
-                        yield_!(out, Json::Number(start.clone()));
+                        yield_!(out, Json::Number(start.clone()).into());
                     }
                 }
 
@@ -201,7 +203,7 @@ async fn range(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEn
 
                 let mut len = (end - start).to_integer(Round::Up).unwrap();
                 while len > 0 {
-                    yield_!(out, Json::Number(curr.clone()));
+                    yield_!(out, Json::Number(curr.clone()).into());
                     curr.inc_mut();
                     len -= 1;
                 }
@@ -237,30 +239,31 @@ async fn range(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEn
     None
 }
 
-async fn plus(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    binary(out, ctx, args, json, |l, r, _| match (l, r) {
-        (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l + r)),
-        (Json::Array(l), Json::Array(r)) => Ok(Json::Array([l.as_slice(), r.as_slice()].concat())),
-        (Json::String(l), Json::String(r)) => Ok(Json::String(String::new() + l + r)),
-        (Json::Object(l), Json::Object(r)) => {
-            let mut ret = l.clone();
-            ret.extend(r.clone());
-            Ok(Json::Object(ret))
+async fn plus(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        match (l.as_ref(), r.as_ref()) {
+            (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l + r).into()),
+            (Json::Array(l), Json::Array(r)) => Ok(Json::Array(r + l).into()),
+            (Json::String(l), Json::String(r)) => Ok(Json::String(
+                (String::with_capacity(l.len() + r.len()) + l.as_ref() + r.as_ref()).into(),
+            )
+            .into()),
+            (Json::Object(l), Json::Object(r)) => Ok(Json::Object(r + l).into()),
+            (Json::Null, _) => Ok(r.clone()),
+            (_, Json::Null) => Ok(l.clone()),
+            (l, r) => Err(str_error(format!(
+                "{} and {} cannot be added",
+                json_fmt_error(l),
+                json_fmt_error(r)
+            ))),
         }
-        (Json::Null, r) => Ok(r.clone()),
-        (l, Json::Null) => Ok(l.clone()),
-        (l, r) => Err(str_error(format!(
-            "{} and {} cannot be added",
-            json_fmt_error(l),
-            json_fmt_error(r)
-        ))),
     })
     .await
 }
 
-async fn negate(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    unary(out, ctx, args, json, |val, _| match val {
-        Json::Number(n) => Ok(Json::Number(-n)),
+async fn negate(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    unary(out, ctx, args, json, |val, _| match val.as_ref() {
+        Json::Number(n) => Ok(Json::Number(-n).into()),
         any => Err(str_error(format!(
             "{} cannot be negated",
             json_fmt_error(any)
@@ -269,207 +272,176 @@ async fn negate(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunE
     .await
 }
 
-async fn minus(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    binary(out, ctx, args, json, |l, r, _| match (l, r) {
-        (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l - r)),
-        (Json::Array(l), Json::Array(r)) => Ok(Json::Array(
-            l.iter().filter(|&x| !r.contains(x)).cloned().collect(),
-        )),
-        (l, r) => Err(str_error(format!(
-            "{} and {} cannot be substracted",
-            json_fmt_error(l),
-            json_fmt_error(r)
-        ))),
+async fn minus(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        match (l.as_ref(), r.as_ref()) {
+            (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l - r).into()),
+            (Json::Array(l), Json::Array(r)) => {
+                Ok(Json::Array(l.iter().filter(|&x| !r.contains(x)).cloned().collect()).into())
+            }
+            (l, r) => Err(str_error(format!(
+                "{} and {} cannot be substracted",
+                json_fmt_error(l),
+                json_fmt_error(r)
+            ))),
+        }
     })
     .await
 }
 
-async fn multiply(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    binary(out, ctx, args, json, |l, r, _| match (l, r) {
-        (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l * r)),
-        (Json::String(s), Json::Number(n)) => Ok(n
-            .to_usize(Round::Down)
-            .map(|n| Json::String(s.clone().repeat(n)))
-            .unwrap_or(Json::Null)),
-        (Json::Object(l), Json::Object(r)) => {
-            fn merge_rec(l: &mut HashMap<String, Json>, r: &HashMap<String, Json>) {
-                for (key, r_val) in r {
-                    match (l.get_mut(key), r_val) {
-                        (Some(Json::Object(l_val)), Json::Object(r_val)) => {
-                            merge_rec(l_val, r_val);
+async fn multiply(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        match (l.as_ref(), r.as_ref()) {
+            (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l * r).into()),
+            (Json::String(s), Json::Number(n)) => Ok(n
+                .to_usize(Round::Down)
+                .map(|n| Json::String(s.clone().repeat(n).into()).into())
+                .unwrap_or(Json::arc_null())),
+            (Json::Object(_), Json::Object(_)) => {
+                fn merge_rec_arc(l: Arc<Json>, r: Arc<Json>) -> Arc<Json> {
+                    match (l.as_ref(), r.as_ref()) {
+                        (Json::Object(l), Json::Object(r)) => {
+                            Json::Object(l.clone().union_with(r.clone(), merge_rec_arc)).into()
                         }
-                        _ => {
-                            l.insert(key.clone(), r_val.clone());
-                        }
+                        _ => r,
                     }
                 }
+                Ok(merge_rec_arc(l.clone(), r.clone()))
             }
-            let mut ret = l.clone();
-            merge_rec(&mut ret, r);
-            Ok(Json::Object(ret))
+            (l, r) => Err(str_error(format!(
+                "{} and {} cannot be multiplied",
+                json_fmt_error(l),
+                json_fmt_error(r)
+            ))),
         }
-        (l, r) => Err(str_error(format!(
-            "{} and {} cannot be multiplied",
-            json_fmt_error(l),
-            json_fmt_error(r)
-        ))),
     })
     .await
 }
 
-async fn divide(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    binary(out, ctx, args, json, |l, r, _| match (l, r) {
-        (jl @ Json::Number(l), jr @ Json::Number(r)) => {
-            if r.is_zero() {
-                Err(str_error(format!(
-                    "{} and {} cannot be divided because the divisor is zero",
-                    json_fmt_error(jl),
-                    json_fmt_error(jr)
-                )))
-            } else {
-                Ok(Json::Number(l / r))
+async fn divide(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        match (l.as_ref(), r.as_ref()) {
+            (jl @ Json::Number(l), jr @ Json::Number(r)) => {
+                if r.is_zero() {
+                    Err(str_error(format!(
+                        "{} and {} cannot be divided because the divisor is zero",
+                        json_fmt_error(jl),
+                        json_fmt_error(jr)
+                    )))
+                } else {
+                    Ok(Json::Number(l / r).into())
+                }
             }
+            (Json::String(l), Json::String(r)) => Ok(Json::Array({
+                let mut ret = l
+                    .split(r.as_ref())
+                    .map(|s| Json::String(s.into()).into())
+                    .collect::<im::Vector<_>>();
+                if r.is_empty() {
+                    ret.pop_front();
+                    ret.pop_back();
+                }
+                ret
+            })
+            .into()),
+            (l, r) => Err(str_error(format!(
+                "{} and {} cannot be divided",
+                json_fmt_error(l),
+                json_fmt_error(r)
+            ))),
         }
-        (Json::String(l), Json::String(r)) => Ok(Json::Array({
-            let mut ret = l
-                .split(r)
-                .map(|s| Json::String(s.to_string()))
-                .collect::<Vec<_>>();
-            if r.is_empty() {
-                ret.pop();
-                ret.remove(0);
-            }
-            ret
-        })),
-        (l, r) => Err(str_error(format!(
-            "{} and {} cannot be divided",
-            json_fmt_error(l),
-            json_fmt_error(r)
-        ))),
     })
     .await
 }
 
-async fn modulus(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    binary(out, ctx, args, json, |l, r, _| match (l, r) {
-        (jl @ Json::Number(l), jr @ Json::Number(r)) => {
-            if r.is_zero() {
-                Err(str_error(format!(
-                    "{} and {} cannot be divided (remainder) because the divisor is zero",
-                    json_fmt_error(jl),
-                    json_fmt_error(jr)
-                )))
-            } else {
-                let left = l.to_integer(Round::Zero);
-                let right = r.to_integer(Round::Zero);
-                Ok(Json::Number(Number::Int(match (left, right) {
-                    (Some(left), Some(right)) => {
-                        let ret = left.clone().abs() % right.abs();
-                        if left.is_negative() {
-                            -ret
-                        } else {
-                            ret
+async fn modulus(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    binary(out, ctx, args, json, |l, r, _| {
+        match (l.as_ref(), r.as_ref()) {
+            (jl @ Json::Number(l), jr @ Json::Number(r)) => {
+                if r.is_zero() {
+                    Err(str_error(format!(
+                        "{} and {} cannot be divided (remainder) because the divisor is zero",
+                        json_fmt_error(jl),
+                        json_fmt_error(jr)
+                    )))
+                } else {
+                    let left = l.to_integer(Round::Zero);
+                    let right = r.to_integer(Round::Zero);
+                    Ok(Json::Number(Number::Int(match (left, right) {
+                        (Some(left), Some(right)) => {
+                            let ret = left.clone().abs() % right.abs();
+                            if left.is_negative() { -ret } else { ret }
                         }
-                    }
-                    (None, Some(right)) => right,
-                    (Some(left), None) => left,
-                    (None, None) => Integer::ZERO,
-                })))
+                        (None, Some(right)) => right,
+                        (Some(left), None) => left,
+                        (None, None) => Integer::ZERO,
+                    }))
+                    .into())
+                }
             }
+            (l, r) => Err(str_error(format!(
+                "{} and {} cannot be divided (remainder)",
+                json_fmt_error(l),
+                json_fmt_error(r)
+            ))),
         }
-        (l, r) => Err(str_error(format!(
-            "{} and {} cannot be divided (remainder)",
-            json_fmt_error(l),
-            json_fmt_error(r)
-        ))),
     })
     .await
 }
 
-async fn equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn equal(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
-        Ok(Json::Bool({
-            if l.is_nan() || r.is_nan() {
-                false
-            } else {
-                l == r
-            }
-        }))
+        Ok(Json::arc_bool(l.is_nan() && r.is_nan() && l != r))
     })
     .await
 }
 
-async fn not_equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn not_equal(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
-        Ok(Json::Bool({
-            if l.is_nan() || r.is_nan() {
-                true
-            } else {
-                l != r
-            }
-        }))
+        Ok(Json::arc_bool(l.is_nan() || r.is_nan() || l != r))
     })
     .await
 }
 
-async fn less(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn less(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
-        Ok(Json::Bool({
-            if l.is_nan() {
-                true
-            } else {
-                l < r
-            }
-        }))
+        Ok(Json::arc_bool(l.is_nan() || l < r))
     })
     .await
 }
 
-async fn less_equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn less_equal(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
-        Ok(Json::Bool({
-            if l.is_nan() {
-                true
-            } else {
-                l <= r
-            }
-        }))
+        Ok(Json::arc_bool(l.is_nan() || l <= r))
     })
     .await
 }
 
-async fn greater(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn greater(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
-        Ok(Json::Bool({
-            if l.is_nan() {
-                false
-            } else {
-                l > r
-            }
-        }))
+        Ok(Json::arc_bool(!l.is_nan() && l > r))
     })
     .await
 }
 
-async fn greater_equal(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
+async fn greater_equal(
+    out: RunOut,
+    ctx: &RunCtx,
+    args: &[Arc<Filter>],
+    json: &Arc<Json>,
+) -> RunEnd {
     binary(out, ctx, args, json, |l, r, _| {
-        Ok(Json::Bool({
-            if l.is_nan() {
-                false
-            } else {
-                l >= r
-            }
-        }))
+        Ok(Json::arc_bool(!l.is_nan() && l >= r))
     })
     .await
 }
 
-async fn sort(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    nullary(out, ctx, args, json, |json| match json {
+async fn sort(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    nullary(out, ctx, args, json, |json| match json.as_ref() {
         Json::Array(arr) => {
             let mut new_arr = arr.clone();
             new_arr.sort();
-            Ok(Json::Array(new_arr))
+            Ok(Json::Array(new_arr).into())
         }
         _ => Err(str_error(format!(
             "{} cannot be sorted, as it is not an array",
@@ -479,13 +451,10 @@ async fn sort(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd
     .await
 }
 
-async fn infinite(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    nullary(out, ctx, args, json, |_| {
-        Ok(Json::Number(Number::infinity()))
-    })
-    .await
+async fn infinite(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    nullary(out, ctx, args, json, |_| Ok(Json::arc_infinity())).await
 }
 
-async fn nan(out: RunOut, ctx: &RunCtx, args: &[Filter], json: &Json) -> RunEnd {
-    nullary(out, ctx, args, json, |_| Ok(Json::Number(Number::nan()))).await
+async fn nan(out: RunOut, ctx: &RunCtx, args: &[Arc<Filter>], json: &Arc<Json>) -> RunEnd {
+    nullary(out, ctx, args, json, |_| Ok(Json::arc_nan())).await
 }

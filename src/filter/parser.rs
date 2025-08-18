@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 pub use crate::parser::ParserPos;
 use crate::{
-    filter::lexer::Op,
-    lexer::LexSource,
-    parser::{ExpectationFailed, Parser},
+    filter::lexer::Op, json::Json, lexer::LexSource, parser::{ExpectationFailed, Parser}
 };
 
 use super::{
@@ -344,7 +342,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
                     parser,
                     op_prefix_precedence(&Op::Minus),
                     OpAssoc::None,
-                )?],
+                )?.into()],
             ),
             tok if is_term(&tok) => {
                 // Term
@@ -394,7 +392,7 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
 
             // Helper function to more easily define operator behaviour
             fn op_call(name: &str, left: Filter, right: Filter) -> Filter {
-                Filter::FuncCall(name.into(), vec![left, right])
+                Filter::FuncCall(name.into(), vec![left.into(), right.into()])
             }
             fn assign_op(name: &str, left: Filter, right: Filter) -> Filter {
                 Filter::VarDef(
@@ -411,24 +409,24 @@ fn Exp(parser: &mut FParser) -> FResult<Filter> {
             // Shift
             left = match op {
                 Op::Opt => Filter::TryCatch(Arc::new(left), Arc::new(Filter::Empty)),
-                Op::Assign => Filter::FuncCall("_assign".into(), vec![left, right]),
+                Op::Assign => op_call("__assign", left, right),
                 Op::Or => Filter::IfElse(
                     Arc::new(left),
-                    Arc::new(Filter::bool(true)),
+                    Filter::arc_bool(true),
                     Arc::new(Filter::IfElse(
                         Arc::new(right),
-                        Arc::new(Filter::bool(true)),
-                        Arc::new(Filter::bool(false)),
+                        Filter::arc_bool(true),
+                        Filter::arc_bool(false),
                     )),
                 ),
                 Op::And => Filter::IfElse(
                     Arc::new(left),
                     Arc::new(Filter::IfElse(
                         Arc::new(right),
-                        Arc::new(Filter::bool(true)),
-                        Arc::new(Filter::bool(false)),
+                        Filter::arc_bool(true),
+                        Filter::arc_bool(false),
                     )),
-                    Arc::new(Filter::bool(false)),
+                    Filter::arc_bool(false),
                 ),
                 Op::Alt => Filter::Alt(Arc::new(left), Arc::new(right)),
                 Op::AltA => Filter::VarDef(
@@ -571,9 +569,9 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
         FT::Recr => Filter::FuncCall("recurse".into(), vec![]),
         FT::Quote => parser.push_and_then(FT::Quote, String)?,
         FT::Num(n) => parser.push_and_then(FT::Num(n), Number)?,
-        FT::True => Filter::bool(true),
-        FT::False => Filter::bool(false),
-        FT::Null => Filter::null(),
+        FT::True => Filter::Json(Json::arc_true()),
+        FT::False => Filter::Json(Json::arc_false()),
+        FT::Null => Filter::Json(Json::arc_null()),
         FT::Break => {
             parser.expect_token(FT::Var)?;
             let tok = parser.pop_token()?;
@@ -587,7 +585,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
             if let FT::Quote = parser.peek_token()? {
                 parser.push_and_then(FT::Format(format), String)?
             } else {
-                Filter::FuncCall("format".into(), vec![Filter::string(format.to_string())])
+                Filter::FuncCall("format".into(), vec![Filter::string(format).into()])
             }
         }
         FT::LPar => {
@@ -628,7 +626,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
         FT::Field(field) => {
             let filter = Filter::Project(
                 Arc::new(Filter::Identity),
-                Arc::new(Filter::string(field.to_string())),
+                Arc::new(Filter::string(field)),
             );
             try_opt(parser, filter)?
         }
@@ -638,7 +636,7 @@ fn Term(parser: &mut FParser) -> FResult<Filter> {
     loop {
         term = match parser.pop_token()? {
             FT::Field(field) => {
-                Filter::Project(Arc::new(term), Arc::new(Filter::string(field.to_string())))
+                Filter::Project(Arc::new(term), Arc::new(Filter::string(field)))
             }
             FT::Dot => Filter::Project(Arc::new(term), Arc::new(String(parser)?)),
             FT::LBrack => {
@@ -719,9 +717,10 @@ fn is_term(tok: &FilterToken) -> bool {
 /// Args
 ///   : Exp
 ///   | Args ';' Exp
-fn Args(parser: &mut FParser) -> FResult<Vec<Filter>> {
+fn Args(parser: &mut FParser) -> FResult<Vec<Arc<Filter>>> {
     parser
         .parse_sequence(Exp, FT::Semicolon, FT::RPar)
+        .map(|r| r.map(|r| r.into()))
         .collect::<Result<_, _>>()
 }
 
@@ -729,7 +728,7 @@ fn Args(parser: &mut FParser) -> FResult<Vec<Filter>> {
 ///   : {- empty -}
 ///   | MkDictPair
 ///   | MkDict ',' MkDictPair
-fn MkDict(parser: &mut FParser) -> FResult<Vec<(Filter, Filter)>> {
+fn MkDict(parser: &mut FParser) -> FResult<Vec<(Arc<Filter>, Arc<Filter>)>> {
     parser
         .parse_sequence(MkDictPair, FT::Op(Op::Comma), FT::RBrace)
         .collect::<Result<_, _>>()
@@ -745,7 +744,7 @@ fn MkDict(parser: &mut FParser) -> FResult<Vec<(Filter, Filter)>> {
 ///   | id
 ///   | Keyword
 ///   | '(' Exp ')' ':' ExpD
-fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
+fn MkDictPair(parser: &mut FParser) -> FResult<(Arc<Filter>, Arc<Filter>)> {
     let tok = parser.pop_token()?;
 
     if let FT::Var = tok {
@@ -755,14 +754,14 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
             tok => return Err(ParserError::UnexpectedToken(tok)),
         };
 
-        return Ok((Filter::string(key.to_string()), Filter::Var(key)));
+        return Ok((Filter::string(key.clone()).into(), Filter::Var(key).into()));
     }
 
     let mut is_exp = false;
 
     let key = match tok {
-        FT::Id(id) => Filter::string(id.to_string()),
-        tok if is_keyword(&tok) => Filter::string(tok.to_string()),
+        FT::Id(id) => Filter::string(id),
+        tok if is_keyword(&tok) => Filter::string(tok.to_string().into()),
         FT::Quote | FT::Format(_) => parser.push_and_then(tok, String)?,
         FT::LPar => {
             is_exp = true;
@@ -785,7 +784,7 @@ fn MkDictPair(parser: &mut FParser) -> FResult<(Filter, Filter)> {
         Filter::Project(Arc::new(Filter::Identity), Arc::new(key.clone()))
     };
 
-    Ok((key, val))
+    Ok((key.into(), val.into()))
 }
 
 /// ExpD
@@ -805,7 +804,7 @@ fn ExpD(parser: &mut FParser) -> FResult<Filter> {
 
         while minus_count > 0 {
             minus_count -= 1;
-            expd = Filter::FuncCall("_negate".into(), vec![expd]);
+            expd = Filter::FuncCall("_negate".into(), vec![expd.into()]);
         }
 
         Ok(expd)
@@ -844,7 +843,7 @@ fn String(parser: &mut FParser) -> FResult<Filter> {
 
     Ok(Filter::VarDef(
         "_fmt".into(),
-        Arc::new(Filter::string(format.to_string())),
+        Arc::new(Filter::string(format)),
         Arc::new(string),
     ))
 }
@@ -870,7 +869,7 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
             }
         }
 
-        Ok(Filter::string(str))
+        Ok(Filter::string(str.into()))
     }
 
     // Morph json parser into string parser
@@ -901,7 +900,7 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
         filter = Filter::FuncCall(
             "_plus".into(),
             vec![
-                filter,
+                filter.into(),
                 Filter::FuncCall(
                     "_plus".into(),
                     vec![
@@ -909,12 +908,12 @@ fn InterpString(parser: &mut FParser) -> FResult<Filter> {
                             Arc::new(exp),
                             Arc::new(Filter::FuncCall(
                                 "format".into(),
-                                vec![Filter::Var("_fmt".into())],
+                                vec![Filter::Var("_fmt".into()).into()],
                             )),
-                        ),
-                        string,
+                        ).into(),
+                        string.into(),
                     ],
-                ),
+                ).into(),
             ],
         );
     }

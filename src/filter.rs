@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::{Arc, LazyLock}};
 
 use crate::{json::Json, lexer::LexSource, math::Number};
 
@@ -35,8 +35,8 @@ pub enum Filter {
     VarDef(Arc<str>, FilterRef, FilterRef), // <name> as <body> | <next>
 
     // Literals
-    ArrayLit(FilterRef),              // [<array>]
-    ObjectLit(Vec<(Filter, Filter)>), // {<key>: <value>, ...}
+    ArrayLit(FilterRef),                    // [<array>]
+    ObjectLit(Vec<(FilterRef, FilterRef)>), // {<key>: <value>, ...}
 
     // Projections
     Project(FilterRef, FilterRef), // <term>.<field>
@@ -56,7 +56,7 @@ pub enum Filter {
 
     // Functions
     FuncDef(Arc<str>, Vec<FuncParam>, FilterRef, FilterRef), // def <name>(<params>): <body>; <next>
-    FuncCall(Arc<str>, Vec<Filter>),                         // <name>(<args>)
+    FuncCall(Arc<str>, Vec<FilterRef>),                         // <name>(<args>)
 
     // Label & Break
     Label(Arc<str>, FilterRef), // label $<name> | <next>
@@ -66,11 +66,11 @@ pub enum Filter {
     Loc(Arc<str>, usize), // $__loc__
 }
 impl Filter {
-    pub fn run<'a>(&'a self, ctx: &'a run::RunCtx, json: &'a Json) -> run::RunGen<impl std::future::Future<Output = run::RunEnd> + 'a> {
+    pub fn run<'a>(self: &'a Arc<Self>, ctx: &'a run::RunCtx, json: &'a Arc<Json>) -> run::RunGen<impl std::future::Future<Output = run::RunEnd> + 'a> {
         run::run(ctx, self, json)
     }
 
-    pub fn string(s: String) -> Self {
+    pub fn string(s: Arc<str>) -> Self {
         Self::Json(Json::String(s).into())
     }
 
@@ -78,19 +78,34 @@ impl Filter {
         Self::Json(Json::Number(n).into())
     }
 
-    pub fn bool(b: bool) -> Self {
-        Self::Json(Json::Bool(b).into())
+    pub fn arc_null() -> Arc<Self> {
+        static ARC_NULL: LazyLock<Arc<Filter>> = LazyLock::new(|| Arc::new(Filter::Json(Json::arc_null())));
+        ARC_NULL.clone()
     }
 
-    pub fn null() -> Self {
-        Self::Json(Json::Null.into())
+    pub fn arc_true() -> Arc<Self> {
+        static ARC_TRUE: LazyLock<Arc<Filter>> = LazyLock::new(|| Arc::new(Filter::Json(Json::arc_true())));
+        ARC_TRUE.clone()
     }
 
-    pub fn array(arr: Vec<Json>) -> Self {
+    pub fn arc_false() -> Arc<Self> {
+        static ARC_FALSE: LazyLock<Arc<Filter>> = LazyLock::new(|| Arc::new(Filter::Json(Json::arc_false())));
+        ARC_FALSE.clone()
+    }
+
+    pub fn arc_bool(b: bool) -> Arc<Self> {
+        if b {
+            Self::arc_true()
+        } else {
+            Self::arc_false()
+        }
+    }
+
+    pub fn array(arr: im::Vector<Arc<Json>>) -> Self {
         Self::Json(Json::Array(arr).into())
     }
 
-    pub fn object(obj: HashMap<String, Json>) -> Self {
+    pub fn object(obj: im::HashMap<Arc<str>, Arc<Json>>) -> Self {
         Self::Json(Json::Object(obj).into())
     }
 }

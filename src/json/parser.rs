@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
 pub use crate::parser::ParserPos;
 use crate::{
@@ -148,11 +148,12 @@ fn Json(parser: &mut JParser) -> JResult<Json> {
     }
 }
 
-fn Array(parser: &mut JParser) -> JResult<Vec<Json>> {
+fn Array(parser: &mut JParser) -> JResult<im::Vector<Arc<Json>>> {
     parser.expect_token(JT::LBrack)?;
 
     let ret = parser
         .parse_sequence(Json, JT::Comma, JT::RBrack)
+        .map(|r| r.map(Arc::new))
         .collect::<Result<_, _>>()?;
 
     parser.expect_token(JT::RBrack)?;
@@ -160,7 +161,7 @@ fn Array(parser: &mut JParser) -> JResult<Vec<Json>> {
     Ok(ret)
 }
 
-fn Object(parser: &mut JParser) -> JResult<HashMap<String, Json>> {
+fn Object(parser: &mut JParser) -> JResult<im::HashMap<Arc<str>, Arc<Json>>> {
     parser.expect_token(JT::LBrace)?;
 
     let ret = parser
@@ -172,17 +173,17 @@ fn Object(parser: &mut JParser) -> JResult<HashMap<String, Json>> {
     Ok(ret)
 }
 
-fn ObjectElement(parser: &mut JParser) -> JResult<(String, Json)> {
+fn ObjectElement(parser: &mut JParser) -> JResult<(Arc<str>, Arc<Json>)> {
     let key = String(parser)?;
 
     parser.expect_token(JT::KVDelim)?;
 
-    let val = Json(parser)?;
+    let val = Json(parser)?.into();
 
     Ok((key, val))
 }
 
-fn String(parser: &mut JParser) -> JResult<String> {
+fn String(parser: &mut JParser) -> JResult<Arc<str>> {
     parser.expect_token(JT::Quote)?;
 
     // Morph json parser into string parser
@@ -201,7 +202,7 @@ fn String(parser: &mut JParser) -> JResult<String> {
     // Restore json parser
     str_parser.morph_into(parser);
 
-    Ok(str)
+    Ok(str.into())
 }
 
 fn RawString(parser: &mut JParser) -> JResult<String> {

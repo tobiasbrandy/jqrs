@@ -1,5 +1,7 @@
 mod common;
 
+use std::sync::Arc;
+
 use common::{parse_tests, JqTest};
 use jqrs::{
     filter::{run::{RunCtx, RunEndValue}, Filter},
@@ -11,15 +13,17 @@ fn test_run(test: JqTest) {
     let test_filter = test.filter;
     let test_input = test.input;
 
-    let filter = test
+    let filter: Arc<_> = test
         .filter
         .parse::<Filter>()
-        .unwrap_or_else(|err| panic!("error parsing filter: {test_filter}: {err}"));
+        .unwrap_or_else(|err| panic!("error parsing filter: {test_filter}: {err}"))
+        .into();
 
-    let input = test
+    let input: Arc<_> = test
         .input
         .parse::<Json>()
-        .unwrap_or_else(|err| panic!("error parsing input json: {test_input}: {err}"));
+        .unwrap_or_else(|err| panic!("error parsing input json: {test_input}: {err}"))
+        .into();
 
     let expected_result = test
         .result
@@ -27,6 +31,7 @@ fn test_run(test: JqTest) {
         .map(|json| {
             json.parse::<Json>()
                 .unwrap_or_else(|err| panic!("error parsing filter: {test_filter}: {err}"))
+                .into()
         })
         .collect::<Vec<_>>();
 

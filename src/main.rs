@@ -1,7 +1,6 @@
 pub mod options;
 
 use std::{
-    collections::HashMap,
     io::{BufRead, BufReader, IsTerminal, Read, Write},
     process::ExitCode,
     sync::Arc,
@@ -44,8 +43,8 @@ fn process_json(
     options: &JqOptions,
     fmt: &json::fmt::Format,
     ctx: &filter::run::RunCtx,
-    filter: &Filter,
-    json: Result<Json, JsonParserError>,
+    filter: &Arc<Filter>,
+    json: Result<Arc<Json>, JsonParserError>,
 ) -> ExitCode {
     match json {
         Ok(json) => {
@@ -177,41 +176,42 @@ fn build_json_fmt(options: &JqOptions) -> json::fmt::Format {
     }
 }
 
-fn build_run_vars(options: &JqOptions) -> Result<HashMap<Arc<str>, Json>, AppError> {
-    fn parse_input_arg(arg: &InputArg) -> Result<Json, AppError> {
+fn build_run_vars(options: &JqOptions) -> Result<im::HashMap<Arc<str>, Arc<Json>>, AppError> {
+    fn parse_input_arg(arg: &InputArg) -> Result<Arc<Json>, AppError> {
         Ok(match arg {
-            InputArg::String(arg) => Json::String(parse_raw_json_string(LexSource::Str(arg))?),
+            InputArg::String(arg) => {
+                Json::String(parse_raw_json_string(LexSource::Str(arg))?.into())
+            }
             InputArg::Json(arg) => arg.parse()?,
             InputArg::SlurpFile(path) => Json::Array(
-                Json::parser(LexSource::from_path(path)?).collect::<Result<Vec<_>, _>>()?,
+                Json::parser(LexSource::from_path(path)?)
+                    .map(|r| r.map(Arc::new))
+                    .collect::<Result<im::Vector<_>, _>>()?,
             ),
             InputArg::RawFile(path) => {
-                Json::String(parse_raw_json_string(LexSource::from_path(path)?)?)
+                Json::String(parse_raw_json_string(LexSource::from_path(path)?)?.into())
             }
-        })
+        }.into())
     }
 
-    let positional_args: Vec<Json> = options
+    let positional_args = options
         .positional_args
         .iter()
         .map(parse_input_arg)
         .collect::<Result<_, _>>()?;
-    let named_args: HashMap<String, Json> = options
+    let named_args: im::HashMap<Arc<str>, Arc<Json>> = options
         .named_args
         .iter()
-        .map(|(key, arg)| Ok((key.into(), parse_input_arg(arg)?)))
+        .map(|(key, arg)| Ok((key.clone().into(), parse_input_arg(arg)?)))
         .collect::<Result<_, AppError>>()?;
 
-    let mut vars = named_args
-        .iter()
-        .map(|(key, val)| (key.as_str().into(), val.clone()))
-        .collect::<HashMap<_, _>>();
+    let mut vars = named_args.clone();
     vars.insert(
         "ARGS".into(),
-        Json::Object(HashMap::from([
-            ("positional".into(), Json::Array(positional_args)),
-            ("named".into(), Json::Object(named_args)),
-        ])),
+        Json::Object(im::HashMap::from(&[
+            ("positional".into(), Json::Array(positional_args).into()),
+            ("named".into(), Json::Object(named_args).into()),
+        ][..])).into(),
     );
 
     Ok(vars)
@@ -226,7 +226,7 @@ fn main() -> ExitCode {
     let options = JqOptions::from_cli(std::env::args_os());
 
     let filter = match parse_filter(&options.filter_source) {
-        Ok(filter) => filter,
+        Ok(filter) => filter.into(),
         Err(err) => {
             write_error(err);
             return ExitCode::from(3);
@@ -246,7 +246,7 @@ fn main() -> ExitCode {
 
     let read_sources = match options.input_source.clone() {
         InputSource::Null => {
-            return process_json(&options, &json_fmt, &ctx, &filter, Ok(Json::Null));
+            return process_json(&options, &json_fmt, &ctx, &filter, Ok(Json::arc_null()));
         }
         InputSource::Stdin => vec![ReadSource::Stdin],
         InputSource::Files(paths) => paths.into_iter().map(ReadSource::File).collect(),
@@ -258,6 +258,7 @@ fn main() -> ExitCode {
             .map(|read_source| read_source.to_lex_source())
             .filter_map(|result| result.map_err(write_error).ok())
             .flat_map(|source| Json::parser(source))
+            .map(|r| r.map(Arc::new))
             .map(|json| process_json(&options, &json_fmt, &ctx, &filter, json))
             .last()
             .unwrap_or(if options.exit_status {
@@ -271,8 +272,9 @@ fn main() -> ExitCode {
                 .map(|read_source| read_source.to_lex_source())
                 .filter_map(|result| result.map_err(write_error).ok())
                 .flat_map(|source| Json::parser(source))
-                .collect::<Result<Vec<_>, _>>()
-                .map(Json::Array);
+                .map(|r| r.map(Arc::new))
+                .collect::<Result<im::Vector<_>, _>>()
+                .map(|items| Json::Array(items).into());
 
             process_json(&options, &json_fmt, &ctx, &filter, json)
         }
@@ -286,11 +288,13 @@ fn main() -> ExitCode {
                         .lines()
                         .filter_map(|result| result.map_err(write_error).ok())
                         .map(|line| {
-                            parse_raw_json_string(LexSource::String(line)).map(Json::String)
+                            parse_raw_json_string(LexSource::String(line))
+                                .map(|s| Json::String(s.into()))
                         })
                 })
-                .collect::<Result<Vec<_>, _>>()
-                .map(Json::Array);
+                .map(|r| r.map(Arc::new))
+                .collect::<Result<im::Vector<_>, _>>()
+                .map(|items| Json::Array(items).into());
 
             process_json(&options, &json_fmt, &ctx, &filter, json)
         }
@@ -302,7 +306,8 @@ fn main() -> ExitCode {
                 }
             }
 
-            let json = parse_raw_json_string(LexSource::String(raw_string)).map(Json::String);
+            let json = parse_raw_json_string(LexSource::String(raw_string))
+                .map(|s| Json::String(s.into()).into());
 
             process_json(&options, &json_fmt, &ctx, &filter, json)
         }
