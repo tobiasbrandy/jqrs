@@ -86,7 +86,7 @@ pub struct Format {
 }
 impl Format {
     pub const COMPACT: Self = Self {
-        indent: Indent::Spaces(0),
+        indent: Indent::Compact,
         sort: false,
         colors: None,
         raw_str: false,

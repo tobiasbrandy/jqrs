@@ -102,9 +102,10 @@ impl From<Result<Arc<Json>, RunEndValue>> for StepOut {
 enum FrameState {
     #[default]
     Start,
+    Project(ProjectState),
+    Slice(SliceState),
     Comma(CommaState),
     Pipe(PipeState),
-    Project(ProjectState),
 }
 
 fn run(runner: &mut FilterRunner) -> RunVal {
@@ -194,6 +195,10 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
             let state = ensure_state!(state, Project(ProjectState));
             run_project(state, dot, yielded, term.clone(), exp.clone())
         }
+        Filter::Slice(term, left, right) => {
+            let state = ensure_state!(state, Slice(SliceState));
+            run_slice(state, dot, yielded, term.clone(), left.clone(), right.clone())
+        }
         Filter::Pipe(left, right) => {
             let state = ensure_state!(state, Pipe(PipeState));
             run_pipe(state, dot, yielded, left.clone(), right.clone())
@@ -272,8 +277,7 @@ fn run_project(
                 *state = ProjectState::Exp { term };
                 StepOut::Run(exp, dot)
             }
-            RunVal::EndOk => StepOut::EndOk,
-            RunVal::EndErr(err) => StepOut::EndErr(err),
+            val => val.into(),
         },
         ProjectState::Exp { term } => match yielded {
             RunVal::Value(exp) => project(term, &exp).into(),
@@ -281,7 +285,151 @@ fn run_project(
                 *state = ProjectState::Term;
                 StepOut::Continue
             }
-            RunVal::EndErr(err) => StepOut::EndErr(err),
+            val => val.into(),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum SliceState {
+    #[default]
+    Start,
+    Term,
+    Left {
+        term: Arc<Json>,
+    },
+    Right {
+        term: Arc<Json>,
+        left: Arc<Json>,
+    },
+}
+fn run_slice(
+    state: &mut SliceState,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    term: Arc<Filter>,
+    left: Option<Arc<Filter>>,
+    right: Option<Arc<Filter>>,
+) -> StepOut {
+    fn num_to_idx(n: &Number, len: usize, round: rug::float::Round) -> Option<usize> {
+        fn cycle_idx(n: &rug::Integer, len: usize) -> usize {
+            if n.is_negative() {
+                (n.clone() + len).to_usize().unwrap_or(usize::MIN)
+            } else {
+                n.to_usize().unwrap_or(usize::MAX)
+            }
+        }
+
+        match n {
+            Number::Int(n) => Some(cycle_idx(n, len)),
+            Number::Decimal(f) => {
+                if f.is_nan() {
+                    None
+                } else if f.is_infinite() {
+                    Some(if f.is_sign_positive() { len } else { 0 })
+                } else {
+                    Some(cycle_idx(&f.to_integer_round(round).unwrap().0, len))
+                }
+            }
+        }
+    }
+
+    fn slice(term: &Json, left: &Json, right: &Json) -> Result<Arc<Json>, RunEndValue> {
+        match (term, left, right) {
+            (Json::Array(arr), Json::Number(l), Json::Number(r)) => {
+                let len = arr.len();
+                let l = match num_to_idx(l, len, rug::float::Round::Down) {
+                    Some(l) => l,
+                    None => return Ok(Json::arc_null()),
+                };
+                let r = match num_to_idx(r, len, rug::float::Round::Up) {
+                    Some(r) => r,
+                    None => return Ok(Json::arc_null()),
+                };
+
+                if r < l {
+                    return Ok(Json::arc_empty_array());
+                }
+
+                Ok(Json::Array(arr.clone().slice(l..r)).into())
+            }
+            (Json::String(s), Json::Number(l), Json::Number(r)) => {
+                let len = s.len();
+                let l = match num_to_idx(l, len, rug::float::Round::Down) {
+                    Some(l) => l,
+                    None => return Ok(Json::arc_null()),
+                };
+                let r = match num_to_idx(r, len, rug::float::Round::Up) {
+                    Some(r) => r,
+                    None => return Ok(Json::arc_null()),
+                };
+
+                Ok(Json::String(s[l..r].into()).into())
+            }
+            (Json::Null, Json::Number(_), Json::Number(_)) => Ok(Json::arc_null()),
+            (Json::Array(_), anyl, anyr) | (Json::Null, anyl, anyr) => Err(str_error(format!(
+                "Start and end indices of an array slice must be numbers, not {} and {}",
+                json_fmt_type(anyl),
+                json_fmt_type(anyr)
+            ))),
+            (any, _, _) => Err(str_error(
+                json_fmt_error(any) + " cannot be sliced, only arrays or null",
+            )),
+        }
+    }
+
+    match state {
+        SliceState::Start => {
+            *state = SliceState::Term;
+            StepOut::Run(term, dot)
+        }
+        SliceState::Term => match yielded {
+            RunVal::Value(term) => match left {
+                Some(left) => {
+                    *state = SliceState::Left { term };
+                    StepOut::Run(left, dot)
+                }
+                None => {
+                    *state = SliceState::Right {
+                        term,
+                        left: Json::arc_zero(),
+                    };
+                    StepOut::Continue
+                }
+            },
+            val => val.into(),
+        },
+        SliceState::Left { term } => match yielded {
+            RunVal::Value(left) => match right {
+                Some(right) => {
+                    *state = SliceState::Right {
+                        term: term.clone(),
+                        left,
+                    };
+                    StepOut::Run(right, dot)
+                }
+                None => {
+                    let right = Arc::new(Json::Number(Number::Int(match term.as_ref() {
+                        Json::Array(arr) => arr.len().into(),
+                        Json::String(s) => s.len().into(),
+                        _ => rug::Integer::ZERO,
+                    })));
+                    slice(term, &left, &right).into()
+                }
+            },
+            RunVal::EndOk => {
+                *state = SliceState::Term;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+        SliceState::Right { term, left } => match yielded {
+            RunVal::Value(right) => slice(term, left, &right).into(),
+            RunVal::EndOk => {
+                *state = SliceState::Left { term: term.clone() };
+                StepOut::Continue
+            }
+            val => val.into(),
         },
     }
 }
@@ -393,14 +541,10 @@ mod test {
     #[test]
     fn test_run() {
         let input = r#"
-            {
-                "a": 10,
-                "b": 20,
-                "c": 30
-            }
+            [1,2,3]
         "#;
         let filter = r#"
-            1,2,.a,3
+            .[1:3]
         "#;
 
         let input: Arc<_> = input

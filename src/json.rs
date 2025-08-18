@@ -46,6 +46,12 @@ impl Json {
         }
     }
 
+    pub fn arc_zero() -> Arc<Self> {
+        static ARC_ZERO: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::Number(Number::Int(rug::Integer::ZERO))));
+        ARC_ZERO.clone()
+    }
+
     pub fn arc_nan() -> Arc<Self> {
         static ARC_NAN: LazyLock<Arc<Json>> =
             LazyLock::new(|| Arc::new(Json::Number(Number::nan())));
