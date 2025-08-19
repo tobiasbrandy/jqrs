@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex};
+#![allow(clippy::too_many_arguments)]
+
+use std::sync::{Arc, Weak};
 
 use crate::filter::Filter;
 use crate::filter::run::RunEndValue;
@@ -14,7 +16,7 @@ impl FilterRunner {
         Self {
             stack: vec![Frame {
                 filter,
-                scope: Scope::default(),
+                scope: Arc::new(Scope::default()),
                 state: FrameState::default(),
                 dot: json,
                 parent: 0,
@@ -41,8 +43,8 @@ impl Iterator for FilterRunner {
 
 #[derive(Debug, Clone)]
 struct FuncDef {
-    scope: Arc<Mutex<Scope>>,
-    params: Vec<Arc<str>>,
+    scope: Weak<Scope>,
+    params: Arc<[Arc<str>]>,
     body: Arc<Filter>,
 }
 
@@ -50,13 +52,13 @@ struct FuncDef {
 struct Scope {
     vars: im::HashMap<Arc<str>, Arc<Json>>,
     funcs: im::HashMap<(Arc<str>, usize), FuncDef>,
-    labels: im::HashSet<Arc<str>>,
+    // labels: im::HashSet<Arc<str>>,
 }
 
 #[derive(Debug)]
 struct Frame {
     filter: Arc<Filter>,
-    scope: Scope,
+    scope: Arc<Scope>,
     state: FrameState,
     dot: Arc<Json>,
     parent: usize,
@@ -82,7 +84,7 @@ impl From<Result<Arc<Json>, RunEndValue>> for RunVal {
 #[derive(Debug, Clone)]
 enum StepOut {
     Run(Arc<Filter>, Arc<Json>),
-    RunScoped(Arc<Filter>, Arc<Json>, Scope),
+    RunScoped(Arc<Filter>, Arc<Json>, Arc<Scope>),
     Yield(Arc<Json>),
     Return(Arc<Json>),
     Continue,
@@ -115,6 +117,8 @@ enum FrameState {
     Pipe(PipeState),
     TryCatch(TryCatchState),
     Comma(CommaState),
+    FuncDef(FuncDefState),
+    FuncCall(FuncCallState),
 }
 
 fn run(runner: &mut FilterRunner) -> RunVal {
@@ -246,6 +250,12 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
         Filter::Comma(left, right) => {
             run_comma(state!(Comma(CommaState)), dot, yielded, left.clone(), right.clone())
         }
+        Filter::FuncDef(name, params, body, next) => {
+            run_func_def(state!(FuncDef(FuncDefState)), scope, dot, yielded, name.clone(), params.clone(), body.clone(), next.clone())
+        }
+        Filter::FuncCall(name, args) => {
+            run_func_call(state!(FuncCall(FuncCallState)), scope, dot, yielded, name.clone(), args)
+        }
         _ => todo!(),
     }
 }
@@ -277,7 +287,7 @@ fn run_var_def(
                 new_scope.vars.insert(name, body);
 
                 *state = VarDefState::Next;
-                StepOut::RunScoped(next, dot, new_scope)
+                StepOut::RunScoped(next, dot, Arc::new(new_scope))
             }
             val => val.into(),
         },
@@ -647,6 +657,85 @@ fn run_comma(
     }
 }
 
+#[derive(Debug, Clone, Default)]
+enum FuncDefState {
+    #[default]
+    Start,
+    Next,
+}
+fn run_func_def(
+    state: &mut FuncDefState,
+    scope: &Scope,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    name: Arc<str>,
+    params: Arc<[Arc<str>]>,
+    body: Arc<Filter>,
+    next: Arc<Filter>,
+) -> StepOut {
+    match state {
+        FuncDefState::Start => {
+            let new_scope = Arc::new_cyclic(|weak| {
+                let mut scope = scope.clone();
+                scope.funcs.insert((name, params.len()), FuncDef {
+                    scope: weak.clone(),
+                    params,
+                    body,
+                });
+                scope
+            });
+
+            *state = FuncDefState::Next;
+            StepOut::RunScoped(next, dot, new_scope)
+        }
+        FuncDefState::Next => yielded.into(),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum FuncCallState {
+    #[default]
+    Start,
+    Body,
+}
+fn run_func_call(
+    state: &mut FuncCallState,
+    scope: &Arc<Scope>,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    name: Arc<str>,
+    args: &[Arc<Filter>],
+) -> StepOut {
+    static EMPTY_PARAMS: std::sync::LazyLock<Arc<[Arc<str>]>> = std::sync::LazyLock::new(|| Arc::new([]));
+
+    match state {
+        FuncCallState::Start => {
+            let Some(func) = scope.funcs.get(&(name, args.len())) else {
+                // StepOut::Return(builtins::run_rs_builtin(name, argc, out, ctx, args, json))
+                todo!()
+            };
+
+            let param_scope = Arc::downgrade(scope);
+
+            let mut new_scope = func.scope.upgrade().unwrap().as_ref().clone();
+            for (param, arg) in std::iter::zip(func.params.iter(), args) {
+                new_scope.funcs.insert(
+                    (param.clone(), 0),
+                    FuncDef {
+                        scope: param_scope.clone(),
+                        params: EMPTY_PARAMS.clone(),
+                        body: arg.clone(),
+                    },
+                );
+            }
+
+            *state = FuncCallState::Body;
+            StepOut::RunScoped(func.body.clone(), dot, Arc::new(new_scope))
+        }
+        FuncCallState::Body => yielded.into(),
+    }
+}
+
 // ------------------- Error Utils --------------------- //
 
 fn str_error(s: String) -> RunEndValue {
@@ -690,7 +779,7 @@ mod test {
             [1,2,3]
         "#;
         let filter = r#"
-            (1 as $tobi | $tobi), 2, $tobi
+            def tobi: 1, tobi; tobi
         "#;
 
         let input: Arc<_> = input
