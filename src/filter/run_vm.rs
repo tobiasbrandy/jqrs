@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::filter::Filter;
 use crate::filter::run::RunEndValue;
@@ -39,18 +39,23 @@ impl Iterator for FilterRunner {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct FuncDef {
+    scope: Arc<Mutex<Scope>>,
+    params: Vec<Arc<str>>,
+    body: Arc<Filter>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Scope {
-    // vars: im::HashMap<Arc<str>, Json>,
-    // funcs: im::HashMap<(Arc<str>, usize), VmFuncDef>,
-    // labels: im::HashSet<Arc<str>>,
+    vars: im::HashMap<Arc<str>, Arc<Json>>,
+    funcs: im::HashMap<(Arc<str>, usize), FuncDef>,
+    labels: im::HashSet<Arc<str>>,
 }
 
 #[derive(Debug)]
 struct Frame {
     filter: Arc<Filter>,
-    #[allow(dead_code)]
     scope: Scope,
     state: FrameState,
     dot: Arc<Json>,
@@ -77,6 +82,7 @@ impl From<Result<Arc<Json>, RunEndValue>> for RunVal {
 #[derive(Debug, Clone)]
 enum StepOut {
     Run(Arc<Filter>, Arc<Json>),
+    RunScoped(Arc<Filter>, Arc<Json>, Scope),
     Yield(Arc<Json>),
     Return(Arc<Json>),
     Continue,
@@ -102,6 +108,7 @@ impl From<Result<Arc<Json>, RunEndValue>> for StepOut {
 enum FrameState {
     #[default]
     Start,
+    VarDef(VarDefState),
     Project(ProjectState),
     Iter(IterState),
     Slice(SliceState),
@@ -126,9 +133,21 @@ fn run(runner: &mut FilterRunner) -> RunVal {
 
         yielded = match step_output {
             StepOut::Run(filter, dot) => {
+                let scope = frame.scope.clone();
                 runner.stack.push(Frame {
                     filter,
-                    scope: Scope::default(),
+                    scope,
+                    state: FrameState::default(),
+                    dot,
+                    parent: frame_idx,
+                    closed: false,
+                });
+                None
+            }
+            StepOut::RunScoped(filter, dot, scope) => {
+                runner.stack.push(Frame {
+                    filter,
+                    scope,
                     state: FrameState::default(),
                     dot,
                     parent: frame_idx,
@@ -171,6 +190,7 @@ fn run(runner: &mut FilterRunner) -> RunVal {
 fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
     let state = &mut frame.state;
     let dot = frame.dot.clone();
+    let scope = &frame.scope;
 
     macro_rules! state {
         ($variant:ident($ty:ty)) => {{
@@ -196,6 +216,18 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
             FrameState::Start => StepOut::Return(json.clone()),
             _ => unreachable!(),
         },
+        Filter::Var(name) => {
+            match state {
+                FrameState::Start => match scope.vars.get(name) {
+                    Some(json) => StepOut::Return(json.clone()),
+                    None => StepOut::EndErr(str_error(format!("${name} is not defined"))),
+                },
+                _ => unreachable!(),
+            }
+        }
+        Filter::VarDef(name, body, next) => {
+            run_var_def(state!(VarDef(VarDefState)), scope, dot, yielded, name.clone(), body.clone(), next.clone())
+        }
         Filter::Project(term, exp) => {
             run_project(state!(Project(ProjectState)), dot, yielded, term.clone(), exp.clone())
         }
@@ -215,6 +247,41 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
             run_comma(state!(Comma(CommaState)), dot, yielded, left.clone(), right.clone())
         }
         _ => todo!(),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum VarDefState {
+    #[default]
+    Start,
+    Body,
+    Next,
+}
+fn run_var_def(
+    state: &mut VarDefState,
+    scope: &Scope,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    name: Arc<str>,
+    body: Arc<Filter>,
+    next: Arc<Filter>,
+) -> StepOut {
+    match state {
+        VarDefState::Start => {
+            *state = VarDefState::Body;
+            StepOut::Run(body, dot)
+        }
+        VarDefState::Body => match yielded {
+            RunVal::Value(body) => {
+                let mut new_scope = scope.clone();
+                new_scope.vars.insert(name, body);
+
+                *state = VarDefState::Next;
+                StepOut::RunScoped(next, dot, new_scope)
+            }
+            val => val.into(),
+        },
+        VarDefState::Next => yielded.into(),
     }
 }
 
@@ -586,7 +653,6 @@ fn str_error(s: String) -> RunEndValue {
     RunEndValue::Error(Json::String(s.into()).into())
 }
 
-#[allow(dead_code)]
 fn json_fmt_error(json: &Json) -> String {
     format!("{} ({})", json_fmt_type(json), json_fmt_bounded(json))
 }
@@ -624,7 +690,7 @@ mod test {
             [1,2,3]
         "#;
         let filter = r#"
-            .[]
+            (1 as $tobi | $tobi), 2, $tobi
         "#;
 
         let input: Arc<_> = input
