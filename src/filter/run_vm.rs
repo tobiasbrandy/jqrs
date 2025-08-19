@@ -47,7 +47,7 @@ struct Scope {
     // labels: im::HashSet<Arc<str>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Frame {
     filter: Arc<Filter>,
     #[allow(dead_code)]
@@ -98,11 +98,12 @@ impl From<Result<Arc<Json>, RunEndValue>> for StepOut {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 enum FrameState {
     #[default]
     Start,
     Project(ProjectState),
+    Iter(IterState),
     Slice(SliceState),
     Comma(CommaState),
     Pipe(PipeState),
@@ -165,47 +166,49 @@ fn run(runner: &mut FilterRunner) -> RunVal {
     }
 }
 
+#[rustfmt::skip]
 fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
-    macro_rules! ensure_state {
-        ($state:ident, $variant:ident($ty:ty)) => {{
-            if matches!($state, FrameState::Start) {
-                *$state = FrameState::$variant(<$ty>::default());
+    let state = &mut frame.state;
+    let dot = frame.dot.clone();
+
+    macro_rules! state {
+        ($variant:ident($ty:ty)) => {{
+            if matches!(state, FrameState::Start) {
+                *state = FrameState::$variant(<$ty>::default());
             }
-            match $state {
+            match state {
                 FrameState::$variant(s) => s,
                 _ => unreachable!(),
             }
         }};
     }
 
-    let state = &mut frame.state;
-    let dot = frame.dot.clone();
-
     match frame.filter.as_ref() {
         Filter::Identity => match state {
             FrameState::Start => StepOut::Return(dot),
             _ => unreachable!(),
         },
-        Filter::Empty => StepOut::EndOk,
+        Filter::Empty => {
+            StepOut::EndOk
+        }
         Filter::Json(json) => match state {
             FrameState::Start => StepOut::Return(json.clone()),
             _ => unreachable!(),
         },
         Filter::Project(term, exp) => {
-            let state = ensure_state!(state, Project(ProjectState));
-            run_project(state, dot, yielded, term.clone(), exp.clone())
+            run_project(state!(Project(ProjectState)), dot, yielded, term.clone(), exp.clone())
         }
         Filter::Slice(term, left, right) => {
-            let state = ensure_state!(state, Slice(SliceState));
-            run_slice(state, dot, yielded, term.clone(), left.clone(), right.clone())
+            run_slice(state!(Slice(SliceState)), dot, yielded, term.clone(), left.clone(), right.clone())
+        }
+        Filter::Iter => {
+            run_iter(state!(Iter(IterState)), dot)
         }
         Filter::Pipe(left, right) => {
-            let state = ensure_state!(state, Pipe(PipeState));
-            run_pipe(state, dot, yielded, left.clone(), right.clone())
+            run_pipe(state!(Pipe(PipeState)), dot, yielded, left.clone(), right.clone())
         }
         Filter::Comma(left, right) => {
-            let state = ensure_state!(state, Comma(CommaState));
-            run_comma(state, dot, yielded, left.clone(), right.clone())
+            run_comma(state!(Comma(CommaState)), dot, yielded, left.clone(), right.clone())
         }
         _ => todo!(),
     }
@@ -434,6 +437,49 @@ fn run_slice(
     }
 }
 
+#[derive(Default)]
+enum IterState {
+    #[default]
+    Start,
+    IterArray(im::vector::ConsumingIter<Arc<Json>>),
+    IterObject(im::hashmap::ConsumingIter<(Arc<str>, Arc<Json>)>),
+}
+impl std::fmt::Debug for IterState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IterState::Start => write!(f, "Start"),
+            IterState::IterArray(_) => write!(f, "IterArray"),
+            IterState::IterObject(_) => write!(f, "IterObject"),
+        }
+    }
+}
+fn run_iter(state: &mut IterState, dot: Arc<Json>) -> StepOut {
+    match state {
+        IterState::Start => match dot.as_ref() {
+            Json::Array(arr) => {
+                *state = IterState::IterArray(arr.clone().into_iter());
+                run_iter(state, dot)
+            }
+            Json::Object(obj) => {
+                *state = IterState::IterObject(obj.clone().into_iter());
+                run_iter(state, dot)
+            }
+            any => StepOut::EndErr(str_error(format!(
+                "Cannot iterate over {}",
+                json_fmt_error(any)
+            ))),
+        },
+        IterState::IterArray(iter) => match iter.next() {
+            Some(val) => StepOut::Yield(val),
+            None => StepOut::EndOk,
+        },
+        IterState::IterObject(iter) => match iter.next() {
+            Some((_, val)) => StepOut::Yield(val),
+            None => StepOut::EndOk,
+        },
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 enum PipeState {
     #[default]
@@ -544,7 +590,7 @@ mod test {
             [1,2,3]
         "#;
         let filter = r#"
-            .[1:3]
+            .[]
         "#;
 
         let input: Arc<_> = input
