@@ -105,8 +105,9 @@ enum FrameState {
     Project(ProjectState),
     Iter(IterState),
     Slice(SliceState),
-    Comma(CommaState),
     Pipe(PipeState),
+    TryCatch(TryCatchState),
+    Comma(CommaState),
 }
 
 fn run(runner: &mut FilterRunner) -> RunVal {
@@ -206,6 +207,9 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
         }
         Filter::Pipe(left, right) => {
             run_pipe(state!(Pipe(PipeState)), dot, yielded, left.clone(), right.clone())
+        }
+        Filter::TryCatch(try_, catch_) => {
+            run_try_catch(state!(TryCatch(TryCatchState)), dot, yielded, try_.clone(), catch_.clone())
         }
         Filter::Comma(left, right) => {
             run_comma(state!(Comma(CommaState)), dot, yielded, left.clone(), right.clone())
@@ -513,6 +517,36 @@ fn run_pipe(
             }
             val => val.into(),
         },
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum TryCatchState {
+    #[default]
+    Start,
+    Try,
+    Catch,
+}
+fn run_try_catch(
+    state: &mut TryCatchState,
+    dot: Arc<Json>,
+    yielded: RunVal,
+    try_: Arc<Filter>,
+    catch_: Arc<Filter>,
+) -> StepOut {
+    match state {
+        TryCatchState::Start => {
+            *state = TryCatchState::Try;
+            StepOut::Run(try_, dot)
+        }
+        TryCatchState::Try => match yielded {
+            RunVal::EndErr(RunEndValue::Error(err)) => {
+                *state = TryCatchState::Catch;
+                StepOut::Run(catch_, err)
+            }
+            val => val.into(),
+        },
+        TryCatchState::Catch => yielded.into(),
     }
 }
 
