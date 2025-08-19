@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    Filter, FuncParam,
+    Filter,
     lexer::{FilterLexError, FilterStringToken, FilterToken},
 };
 
@@ -114,6 +114,14 @@ fn op_prefix_precedence(op: &Op) -> u8 {
     }
 }
 
+// Encode different types of func params
+// All var params are then desugared into filter params
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FuncParam {
+    VarParam(Arc<str>),
+    FilterParam(Arc<str>),
+}
+
 /// Filter
 ///   : FuncDefs
 ///   | Exp
@@ -152,7 +160,8 @@ fn FuncDefs(parser: &mut FParser) -> FResult<Filter> {
 /// FuncDef
 ///   : def id ':' Exp ';'
 ///   | def id '(' Params ')' ':' Exp ';'
-fn FuncDef(parser: &mut FParser) -> FResult<(Arc<str>, Vec<FuncParam>, Filter)> {
+#[allow(clippy::type_complexity)]
+fn FuncDef(parser: &mut FParser) -> FResult<(Arc<str>, Arc<[Arc<str>]>, Filter)> {
     parser.expect_token(FT::Def)?;
 
     let name = match parser.pop_token()? {
@@ -174,9 +183,31 @@ fn FuncDef(parser: &mut FParser) -> FResult<(Arc<str>, Vec<FuncParam>, Filter)> 
 
     parser.expect_token(FT::Colon)?;
 
-    let body = Exp(parser)?;
+    let mut body = Exp(parser)?;
 
     parser.expect_token(FT::Semicolon)?;
+
+    // Desugar var params into only having filter params
+    let params = {
+        let mut param_names = Vec::with_capacity(params.len());
+        for param in params {
+            match param {
+                FuncParam::FilterParam(name) => {
+                    param_names.push(name);
+                }
+                FuncParam::VarParam(name) => {
+                    body = Filter::VarDef(
+                        name.clone(),
+                        Arc::new(Filter::FuncCall(name.clone(), Vec::new())),
+                        Arc::new(body),
+                    );
+                    param_names.push(name);
+                }
+            }
+        }
+
+        param_names.into()
+    };
 
     Ok((name, params, body))
 }

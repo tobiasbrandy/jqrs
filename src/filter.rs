@@ -9,20 +9,6 @@ pub mod run_vm;
 
 type FilterRef = Arc<Filter>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FuncParam {
-    VarParam(Arc<str>),
-    FilterParam(Arc<str>),
-}
-impl std::fmt::Display for FuncParam {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::VarParam(name) => write!(f, "${name}"),
-            Self::FilterParam(name) => write!(f, "{name}"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
     // Basic
@@ -55,7 +41,7 @@ pub enum Filter {
     Foreach(FilterRef, Arc<str>, FilterRef, FilterRef, FilterRef), // foreach <exp> as $<name> (<init>; <update>; <extract>)
 
     // Functions
-    FuncDef(Arc<str>, Vec<FuncParam>, FilterRef, FilterRef), // def <name>(<params>): <body>; <next>
+    FuncDef(Arc<str>, Arc<[Arc<str>]>, FilterRef, FilterRef), // def <name>(<params>): <body>; <next>
     FuncCall(Arc<str>, Vec<FilterRef>),                         // <name>(<args>)
 
     // Label & Break

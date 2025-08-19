@@ -9,7 +9,7 @@ use either::Either;
 
 use crate::{json::Json, math::Number};
 
-use super::{Filter, FuncParam};
+use super::Filter;
 
 // ------------------- API types --------------------- //
 
@@ -88,7 +88,7 @@ use yield_;
 #[derive(Debug, Clone)]
 struct FuncDef {
     scope: Arc<Mutex<Scope>>,
-    params: Vec<Arc<str>>,
+    params: Arc<[Arc<str>]>,
     body: Arc<Filter>,
 }
 
@@ -841,38 +841,19 @@ async fn run_func_def(
     out: RunOut,
     ctx: &RunCtx,
     name: &Arc<str>,
-    params: &[FuncParam],
+    params: &Arc<[Arc<str>]>,
     body: &Arc<Filter>,
     next: &Arc<Filter>,
     json: &Arc<Json>,
 ) -> RunEnd {
-    let mut body = body.clone();
-    let mut param_names = Vec::new();
-
-    for param in params {
-        match param {
-            FuncParam::FilterParam(name) => {
-                param_names.push(name.clone());
-            }
-            FuncParam::VarParam(name) => {
-                body = Arc::new(Filter::VarDef(
-                    name.clone(),
-                    Arc::new(Filter::FuncCall(name.clone(), Vec::new())),
-                    body.clone(),
-                ));
-                param_names.push(name.clone());
-            }
-        }
-    }
-
     let og_scope = ctx.start_new_scope();
     ctx.insert_func(
         name.clone(),
         params.len(),
         Arc::new(FuncDef {
             scope: ctx.scope.borrow().clone(),
-            params: param_names,
-            body,
+            params: params.clone(),
+            body: body.clone(),
         }),
     );
 
@@ -899,6 +880,8 @@ async fn run_func_call(
     args: &[Arc<Filter>],
     json: &Arc<Json>,
 ) -> RunEnd {
+    static EMPTY_PARAMS: std::sync::LazyLock<Arc<[Arc<str>]>> = std::sync::LazyLock::new(|| Arc::new([]));
+
     let argc = args.len();
 
     if let Some(func) = ctx.get_func(name.clone(), argc) {
@@ -913,7 +896,7 @@ async fn run_func_call(
                 0,
                 Arc::new(FuncDef {
                     scope: og_scope.clone(),
-                    params: vec![],
+                    params: EMPTY_PARAMS.clone(),
                     body: arg.clone(),
                 }),
             );
