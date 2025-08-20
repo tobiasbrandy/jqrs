@@ -208,10 +208,10 @@ fn build_run_vars(options: &JqOptions) -> Result<im::HashMap<Arc<str>, Arc<Json>
     let mut vars = named_args.clone();
     vars.insert(
         "ARGS".into(),
-        Json::Object(im::HashMap::from(&[
-            ("positional".into(), Json::Array(positional_args).into()),
-            ("named".into(), Json::Object(named_args).into()),
-        ][..])).into(),
+        Json::Object(im::hashmap! {
+            "positional".into() => Json::Array(positional_args).into(),
+            "named".into() => Json::Object(named_args).into(),
+        }).into(),
     );
 
     Ok(vars)

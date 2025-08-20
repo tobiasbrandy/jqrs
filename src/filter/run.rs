@@ -960,10 +960,10 @@ async fn run_break(ctx: &RunCtx, label: &Arc<str>) -> RunEnd {
 async fn run_loc(out: RunOut, file: &str, line: usize) -> RunEnd {
     yield_!(
         out,
-        Json::Object(im::HashMap::from(&[
-            ("file".into(), Json::String(file.into()).into()),
-            ("line".into(), Json::Number(Number::Int(line.into())).into()),
-        ][..])).into()
+        Json::Object(im::hashmap! {
+            "file".into() => Json::String(file.into()).into(),
+            "line".into() => Json::Number(Number::Int(line.into())).into(),
+        }).into()
     );
     None
 }

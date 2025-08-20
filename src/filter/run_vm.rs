@@ -126,8 +126,10 @@ enum FrameState {
     Iter(IterState),
     Slice(SliceState),
     Pipe(PipeState),
+    Alt(AltState),
     TryCatch(TryCatchState),
     Comma(CommaState),
+    IfElse(IfElseState),
     FuncDef(FuncDefState),
     FuncCall(FuncCallState),
 }
@@ -265,17 +267,30 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
         Filter::Pipe(left, right) => {
             run_pipe(state!(Pipe), dot, yielded, left, right)
         }
+        Filter::Alt(left, right) => {
+            run_alt(state!(Alt), dot, yielded, left, right)
+        }
         Filter::TryCatch(try_, catch_) => {
             run_try_catch(state!(TryCatch), dot, yielded, try_, catch_)
         }
         Filter::Comma(left, right) => {
             run_comma(state!(Comma), dot, yielded, left, right)
         }
+        Filter::IfElse(cond, then, else_) => {
+            run_if_else(state!(IfElse), dot, yielded, cond, then, else_)
+        }
         Filter::FuncDef(name, params, body, next) => {
             run_func_def(state!(FuncDef), scope, dot, yielded, name, params, body, next)
         }
         Filter::FuncCall(name, args) => {
             run_func_call(state!(FuncCall), scope, dot, yielded, name, args)
+        }
+        Filter::Loc(file, line) => match state {
+            FrameState::Start => StepOut::Return(Json::Object(im::hashmap! {
+                "file".into() => Json::String(file.clone()).into(),
+                "line".into() => Json::Number(Number::Int((*line).into())).into(),
+            }).into()),
+            _ => unreachable!(),
         }
         _ => todo!(),
     }
@@ -752,6 +767,48 @@ fn run_pipe(
 }
 
 #[derive(Debug, Clone, Default)]
+enum AltState {
+    #[default]
+    Start,
+    Left { has_valid_left: bool },
+    Right,
+}
+fn run_alt(
+    state: &mut AltState,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    left: &Arc<Filter>,
+    right: &Arc<Filter>,
+) -> StepOut {
+    match state {
+        AltState::Start => {
+            *state = AltState::Left { has_valid_left: false };
+            StepOut::run(left, dot)
+        }
+        AltState::Left { has_valid_left } => match yielded {
+            RunVal::Value(json) => {
+                if json.to_bool() {
+                    *state = AltState::Left { has_valid_left: true };
+                    StepOut::Yield(json)
+                } else {
+                    StepOut::Continue
+                }
+            }
+            RunVal::EndOk => {
+                if !*has_valid_left {
+                    *state = AltState::Right;
+                    StepOut::run(right, dot)
+                } else {
+                    StepOut::EndOk
+                }
+            }
+            val => val.into(),
+        },
+        AltState::Right => yielded.into(),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 enum TryCatchState {
     #[default]
     Start,
@@ -808,6 +865,47 @@ fn run_comma(
             val => val.into(),
         },
         CommaState::Right => yielded.into(),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum IfElseState {
+    #[default]
+    Start,
+    Cond,
+    Branch,
+}
+fn run_if_else(
+    state: &mut IfElseState,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    cond: &Arc<Filter>,
+    then: &Arc<Filter>,
+    else_: &Arc<Filter>,
+) -> StepOut {
+    match state {
+        IfElseState::Start => {
+            *state = IfElseState::Cond;
+            StepOut::run(cond, dot)
+        }
+        IfElseState::Cond => match yielded {
+            RunVal::Value(cond) => {
+                *state = IfElseState::Branch;
+                if cond.to_bool() {
+                    StepOut::run(then, dot)
+                } else {
+                    StepOut::run(else_, dot)
+                }
+            }
+            val => val.into(),
+        },
+        IfElseState::Branch => match yielded {
+            RunVal::EndOk => {
+                *state = IfElseState::Cond;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
     }
 }
 
