@@ -91,6 +91,15 @@ enum StepOut {
     EndOk,
     EndErr(RunEndValue),
 }
+impl StepOut {
+    fn run(filter: &Arc<Filter>, dot: &Arc<Json>) -> Self {
+        Self::Run(filter.clone(), dot.clone())
+    }
+
+    fn run_scoped(filter: &Arc<Filter>, dot: &Arc<Json>, scope: Arc<Scope>) -> Self {
+        Self::RunScoped(filter.clone(), dot.clone(), scope)
+    }
+}
 impl From<RunVal> for StepOut {
     fn from(val: RunVal) -> Self {
         match val {
@@ -201,7 +210,7 @@ fn run(runner: &mut FilterRunner) -> RunVal {
 #[rustfmt::skip]
 fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
     let state = &mut frame.state;
-    let dot = frame.dot.clone();
+    let dot = &frame.dot;
     let scope = &frame.scope;
 
     macro_rules! state {
@@ -218,7 +227,7 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
 
     match frame.filter.as_ref() {
         Filter::Identity => match state {
-            FrameState::Start => StepOut::Return(dot),
+            FrameState::Start => StepOut::Return(dot.clone()),
             _ => unreachable!(),
         },
         Filter::Empty => {
@@ -236,37 +245,37 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
             _ => unreachable!(),
         }
         Filter::VarDef(name, body, next) => {
-            run_var_def(state!(VarDef), scope, dot, yielded, name.clone(), body.clone(), next.clone())
+            run_var_def(state!(VarDef), scope, dot, yielded, name, body, next)
         }
         Filter::ArrayLit(items) => {
-            run_array_lit(state!(ArrayLit), dot, yielded, items.clone())
+            run_array_lit(state!(ArrayLit), dot, yielded, items)
         }
         Filter::ObjectLit(items) => {
             run_object_lit(state!(ObjectLit), dot, yielded, items)
         }
         Filter::Project(term, exp) => {
-            run_project(state!(Project), dot, yielded, term.clone(), exp.clone())
+            run_project(state!(Project), dot, yielded, term, exp)
         }
         Filter::Slice(term, left, right) => {
-            run_slice(state!(Slice), dot, yielded, term.clone(), left.clone(), right.clone())
+            run_slice(state!(Slice), dot, yielded, term, left, right)
         }
         Filter::Iter => {
             run_iter(state!(Iter), dot)
         }
         Filter::Pipe(left, right) => {
-            run_pipe(state!(Pipe), dot, yielded, left.clone(), right.clone())
+            run_pipe(state!(Pipe), dot, yielded, left, right)
         }
         Filter::TryCatch(try_, catch_) => {
-            run_try_catch(state!(TryCatch), dot, yielded, try_.clone(), catch_.clone())
+            run_try_catch(state!(TryCatch), dot, yielded, try_, catch_)
         }
         Filter::Comma(left, right) => {
-            run_comma(state!(Comma), dot, yielded, left.clone(), right.clone())
+            run_comma(state!(Comma), dot, yielded, left, right)
         }
         Filter::FuncDef(name, params, body, next) => {
-            run_func_def(state!(FuncDef), scope, dot, yielded, name.clone(), params.clone(), body.clone(), next.clone())
+            run_func_def(state!(FuncDef), scope, dot, yielded, name, params, body, next)
         }
         Filter::FuncCall(name, args) => {
-            run_func_call(state!(FuncCall), scope, dot, yielded, name.clone(), args)
+            run_func_call(state!(FuncCall), scope, dot, yielded, name, args)
         }
         _ => todo!(),
     }
@@ -282,24 +291,24 @@ enum VarDefState {
 fn run_var_def(
     state: &mut VarDefState,
     scope: &Scope,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    name: Arc<str>,
-    body: Arc<Filter>,
-    next: Arc<Filter>,
+    name: &Arc<str>,
+    body: &Arc<Filter>,
+    next: &Arc<Filter>,
 ) -> StepOut {
     match state {
         VarDefState::Start => {
             *state = VarDefState::Body;
-            StepOut::Run(body, dot)
+            StepOut::run(body, dot)
         }
         VarDefState::Body => match yielded {
             RunVal::Value(body) => {
                 let mut new_scope = scope.clone();
-                new_scope.vars.insert(name, body);
+                new_scope.vars.insert(name.clone(), body);
 
                 *state = VarDefState::Next;
-                StepOut::RunScoped(next, dot, Arc::new(new_scope))
+                StepOut::run_scoped(next, dot, Arc::new(new_scope))
             }
             val => val.into(),
         },
@@ -315,14 +324,14 @@ enum ArrayLitState {
 }
 fn run_array_lit(
     state: &mut ArrayLitState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    items: Arc<Filter>,
+    items: &Arc<Filter>,
 ) -> StepOut {
     match state {
         ArrayLitState::Start => {
             *state = ArrayLitState::Items(im::Vector::new());
-            StepOut::Run(items, dot)
+            StepOut::run(items, dot)
         }
         ArrayLitState::Items(items) => match yielded {
             RunVal::Value(item) => {
@@ -353,7 +362,7 @@ enum ObjectLitState {
 }
 fn run_object_lit(
     state: &mut ObjectLitState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
     items: &[(Arc<Filter>, Arc<Filter>)],
 ) -> StepOut {
@@ -378,7 +387,7 @@ fn run_object_lit(
 
             // Start the first frame
             let next_frame = &mut frames[curr_idx];
-            let step_out = StepOut::Run(next_frame.key_gen.clone(), dot);
+            let step_out = StepOut::run(&next_frame.key_gen, dot);
 
             // Set the state
             *state = ObjectLitState::Running { curr_idx, frames };
@@ -393,7 +402,7 @@ fn run_object_lit(
                     RunVal::Value(key) => match key.as_ref() {
                         Json::String(key) => {
                             frame.key = Some(key.clone());
-                            StepOut::Run(frame.value_gen.clone(), dot)
+                            StepOut::run(&frame.value_gen, dot)
                         }
                         _ => StepOut::EndErr(str_error(format!(
                             "Cannot use {} as object key",
@@ -425,7 +434,7 @@ fn run_object_lit(
                             *curr_idx += 1;
                             let next_frame = &mut frames[*curr_idx];
                             next_frame.curr = new_curr;
-                            StepOut::Run(next_frame.key_gen.clone(), dot)
+                            StepOut::run(&next_frame.key_gen, dot)
                         }
                     }
                     RunVal::EndOk => {
@@ -451,10 +460,10 @@ enum ProjectState {
 }
 fn run_project(
     state: &mut ProjectState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    term: Arc<Filter>,
-    exp: Arc<Filter>,
+    term: &Arc<Filter>,
+    exp: &Arc<Filter>,
 ) -> StepOut {
     fn project(term: &Json, exp: &Json) -> Result<Arc<Json>, RunEndValue> {
         match (term, exp) {
@@ -499,12 +508,12 @@ fn run_project(
     match state {
         ProjectState::Start => {
             *state = ProjectState::Term;
-            StepOut::Run(term, dot)
+            StepOut::run(term, dot)
         }
         ProjectState::Term => match yielded {
             RunVal::Value(term) => {
                 *state = ProjectState::Exp { term };
-                StepOut::Run(exp, dot)
+                StepOut::run(exp, dot)
             }
             val => val.into(),
         },
@@ -534,11 +543,11 @@ enum SliceState {
 }
 fn run_slice(
     state: &mut SliceState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    term: Arc<Filter>,
-    left: Option<Arc<Filter>>,
-    right: Option<Arc<Filter>>,
+    term: &Arc<Filter>,
+    left: &Option<Arc<Filter>>,
+    right: &Option<Arc<Filter>>,
 ) -> StepOut {
     fn num_to_idx(n: &Number, len: usize, round: rug::float::Round) -> Option<usize> {
         fn cycle_idx(n: &rug::Integer, len: usize) -> usize {
@@ -610,13 +619,13 @@ fn run_slice(
     match state {
         SliceState::Start => {
             *state = SliceState::Term;
-            StepOut::Run(term, dot)
+            StepOut::run(term, dot)
         }
         SliceState::Term => match yielded {
             RunVal::Value(term) => match left {
                 Some(left) => {
                     *state = SliceState::Left { term };
-                    StepOut::Run(left, dot)
+                    StepOut::run(left, dot)
                 }
                 None => {
                     *state = SliceState::Right {
@@ -635,7 +644,7 @@ fn run_slice(
                         term: term.clone(),
                         left,
                     };
-                    StepOut::Run(right, dot)
+                    StepOut::run(right, dot)
                 }
                 None => {
                     let right = Arc::new(Json::Number(Number::Int(match term.as_ref() {
@@ -679,7 +688,7 @@ impl std::fmt::Debug for IterState {
         }
     }
 }
-fn run_iter(state: &mut IterState, dot: Arc<Json>) -> StepOut {
+fn run_iter(state: &mut IterState, dot: &Arc<Json>) -> StepOut {
     match state {
         IterState::Start => match dot.as_ref() {
             Json::Array(arr) => {
@@ -715,20 +724,20 @@ enum PipeState {
 }
 fn run_pipe(
     state: &mut PipeState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    left: Arc<Filter>,
-    right: Arc<Filter>,
+    left: &Arc<Filter>,
+    right: &Arc<Filter>,
 ) -> StepOut {
     match state {
         PipeState::Start => {
             *state = PipeState::Left;
-            StepOut::Run(left, dot)
+            StepOut::run(left, dot)
         }
         PipeState::Left => match yielded {
             RunVal::Value(json) => {
                 *state = PipeState::Right;
-                StepOut::Run(right, json)
+                StepOut::Run(right.clone(), json)
             }
             val => val.into(),
         },
@@ -751,20 +760,20 @@ enum TryCatchState {
 }
 fn run_try_catch(
     state: &mut TryCatchState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    try_: Arc<Filter>,
-    catch_: Arc<Filter>,
+    try_: &Arc<Filter>,
+    catch_: &Arc<Filter>,
 ) -> StepOut {
     match state {
         TryCatchState::Start => {
             *state = TryCatchState::Try;
-            StepOut::Run(try_, dot)
+            StepOut::run(try_, dot)
         }
         TryCatchState::Try => match yielded {
             RunVal::EndErr(RunEndValue::Error(err)) => {
                 *state = TryCatchState::Catch;
-                StepOut::Run(catch_, err)
+                StepOut::Run(catch_.clone(), err)
             }
             val => val.into(),
         },
@@ -781,20 +790,20 @@ enum CommaState {
 }
 fn run_comma(
     state: &mut CommaState,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    left: Arc<Filter>,
-    right: Arc<Filter>,
+    left: &Arc<Filter>,
+    right: &Arc<Filter>,
 ) -> StepOut {
     match state {
         CommaState::Start => {
             *state = CommaState::Left;
-            StepOut::Run(left, dot)
+            StepOut::run(left, dot)
         }
         CommaState::Left => match yielded {
             RunVal::EndOk => {
                 *state = CommaState::Right;
-                StepOut::Run(right, dot)
+                StepOut::run(right, dot)
             }
             val => val.into(),
         },
@@ -811,30 +820,30 @@ enum FuncDefState {
 fn run_func_def(
     state: &mut FuncDefState,
     scope: &Scope,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    name: Arc<str>,
-    params: Arc<[Arc<str>]>,
-    body: Arc<Filter>,
-    next: Arc<Filter>,
+    name: &Arc<str>,
+    params: &Arc<[Arc<str>]>,
+    body: &Arc<Filter>,
+    next: &Arc<Filter>,
 ) -> StepOut {
     match state {
         FuncDefState::Start => {
             let new_scope = Arc::new_cyclic(|weak| {
                 let mut scope = scope.clone();
                 scope.funcs.insert(
-                    (name, params.len()),
+                    (name.clone(), params.len()),
                     FuncDef {
                         scope: weak.clone(),
-                        params,
-                        body,
+                        params: params.clone(),
+                        body: body.clone(),
                     },
                 );
                 scope
             });
 
             *state = FuncDefState::Next;
-            StepOut::RunScoped(next, dot, new_scope)
+            StepOut::run_scoped(next, dot, new_scope)
         }
         FuncDefState::Next => yielded.into(),
     }
@@ -849,9 +858,9 @@ enum FuncCallState {
 fn run_func_call(
     state: &mut FuncCallState,
     scope: &Arc<Scope>,
-    dot: Arc<Json>,
+    dot: &Arc<Json>,
     yielded: RunVal,
-    name: Arc<str>,
+    name: &Arc<str>,
     args: &[Arc<Filter>],
 ) -> StepOut {
     static EMPTY_PARAMS: std::sync::LazyLock<Arc<[Arc<str>]>> =
@@ -859,7 +868,7 @@ fn run_func_call(
 
     match state {
         FuncCallState::Start => {
-            let Some(func) = scope.funcs.get(&(name, args.len())) else {
+            let Some(func) = scope.funcs.get(&(name.clone(), args.len())) else {
                 // StepOut::Return(builtins::run_rs_builtin(name, argc, out, ctx, args, json))
                 todo!()
             };
@@ -879,7 +888,7 @@ fn run_func_call(
             }
 
             *state = FuncCallState::Body;
-            StepOut::RunScoped(func.body.clone(), dot, Arc::new(new_scope))
+            StepOut::run_scoped(&func.body, dot, Arc::new(new_scope))
         }
         FuncCallState::Body => yielded.into(),
     }
