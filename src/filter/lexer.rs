@@ -314,6 +314,7 @@ pub enum FilterToken {
     Format(Arc<str>),
 
     // Control
+    // TODO: backlash comment continuing
     #[regex(r"#[^\n]*", logos::skip)]
     #[display("")]
     _Comment,

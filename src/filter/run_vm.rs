@@ -3,9 +3,15 @@
 use std::sync::{Arc, Weak};
 
 use crate::filter::Filter;
-use crate::filter::run::RunEndValue;
 use crate::json::Json;
 use crate::math::Number;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunEndValue {
+    Error(Arc<Json>),
+    Break(Arc<str>),
+    Halt { code: usize, err: Option<Arc<Json>> },
+}
 
 #[derive(Debug)]
 pub struct FilterRunner {
@@ -52,7 +58,7 @@ struct FuncDef {
 struct Scope {
     vars: im::HashMap<Arc<str>, Arc<Json>>,
     funcs: im::HashMap<(Arc<str>, usize), FuncDef>,
-    // labels: im::HashSet<Arc<str>>,
+    labels: im::HashSet<Arc<str>>,
 }
 
 #[derive(Debug)]
@@ -132,6 +138,7 @@ enum FrameState {
     IfElse(IfElseState),
     FuncDef(FuncDefState),
     FuncCall(FuncCallState),
+    Label(LabelState),
 }
 
 fn run(runner: &mut FilterRunner) -> RunVal {
@@ -284,6 +291,17 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
         }
         Filter::FuncCall(name, args) => {
             run_func_call(state!(FuncCall), scope, dot, yielded, name, args)
+        }
+        Filter::Label(label, then) => {
+            run_label(state!(Label), scope, dot, yielded, label, then)
+        }
+        Filter::Break(label) => match state {
+            FrameState::Start => if scope.labels.contains(label) {
+                StepOut::EndErr(RunEndValue::Break(label.clone()))
+            } else {
+                StepOut::EndErr(str_error(format!("$*label-{label} is not defined")))
+            }
+            _ => unreachable!(),
         }
         Filter::Loc(file, line) => match state {
             FrameState::Start => StepOut::Return(Json::Object(im::hashmap! {
@@ -770,7 +788,9 @@ fn run_pipe(
 enum AltState {
     #[default]
     Start,
-    Left { has_valid_left: bool },
+    Left {
+        has_valid_left: bool,
+    },
     Right,
 }
 fn run_alt(
@@ -782,13 +802,17 @@ fn run_alt(
 ) -> StepOut {
     match state {
         AltState::Start => {
-            *state = AltState::Left { has_valid_left: false };
+            *state = AltState::Left {
+                has_valid_left: false,
+            };
             StepOut::run(left, dot)
         }
         AltState::Left { has_valid_left } => match yielded {
             RunVal::Value(json) => {
                 if json.to_bool() {
-                    *state = AltState::Left { has_valid_left: true };
+                    *state = AltState::Left {
+                        has_valid_left: true,
+                    };
                     StepOut::Yield(json)
                 } else {
                     StepOut::Continue
@@ -992,6 +1016,37 @@ fn run_func_call(
     }
 }
 
+#[derive(Debug, Clone, Default)]
+enum LabelState {
+    #[default]
+    Start,
+    Next,
+}
+fn run_label(
+    state: &mut LabelState,
+    scope: &Scope,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    label: &Arc<str>,
+    then: &Arc<Filter>,
+) -> StepOut {
+    match state {
+        LabelState::Start => {
+            let mut new_scope = scope.clone();
+            new_scope.labels.insert(label.clone());
+
+            *state = LabelState::Next;
+            StepOut::run_scoped(then, dot, Arc::new(new_scope))
+        }
+        LabelState::Next => match yielded {
+            RunVal::EndErr(RunEndValue::Break(break_label)) if break_label == *label => {
+                StepOut::EndOk
+            }
+            val => val.into(),
+        },
+    }
+}
+
 // ------------------- Error Utils --------------------- //
 
 fn str_error(s: String) -> RunEndValue {
@@ -1035,7 +1090,7 @@ mod test {
             [1,2,3]
         "#;
         let filter = r#"
-            {("in", "out"): 9, ("a", "b"): (3,4), "t": 0}
+            1 | label $out | 1, 2, 3, ., break $out, 5, 4, 6, 7
         "#;
 
         let input: Arc<_> = input
@@ -1055,7 +1110,7 @@ mod test {
                 Err(end) => match end {
                     RunEndValue::Error(err) => println!("error: {err}"),
                     RunEndValue::Break(br) => println!("break: {br}"),
-                    RunEndValue::Halt(hlt) => println!("halt: {hlt}"),
+                    RunEndValue::Halt { code, err } => println!("halt: {code} {err:?}"),
                 },
             }
         }
