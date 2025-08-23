@@ -1,6 +1,6 @@
 use std::{str::FromStr, sync::Arc};
 
-use either::Either;
+use auto_enums::auto_enum;
 
 use crate::math::Number;
 
@@ -329,13 +329,17 @@ fn format_object(
     state.level += 1;
 
     let mut iter = {
-        if *sort {
-            let mut items = map.iter().collect::<Vec<_>>();
-            items.sort_by_key(|(key, _)| *key);
-            Either::Left(items.into_iter())
-        } else {
-            Either::Right(map.iter())
+        #[auto_enum(Iterator)]
+        fn entries(map: &im::HashMap<Arc<str>, Arc<Json>>, sort: bool) -> impl Iterator<Item = (&Arc<str>, &Arc<Json>)> {
+            if sort {
+                let mut items = map.iter().collect::<Vec<_>>();
+                items.sort_by_key(|(key, _)| *key);
+                items.into_iter()
+            } else {
+                map.iter()
+            }
         }
+        entries(map, *sort)
     };
 
     if let Some((first_key, first_val)) = iter.next() {
