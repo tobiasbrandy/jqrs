@@ -65,9 +65,9 @@ fn process_json(
                     }
                     Err(end) => {
                         match end {
-                            filter::run_vm::RunEndValue::Error(json) => println!("error: {json}"),
-                            filter::run_vm::RunEndValue::Break(_) => todo!(),
-                            filter::run_vm::RunEndValue::Halt { code: _, err: _ } => todo!(),
+                            filter::run::RunEndValue::Error(json) => println!("error: {json}"),
+                            filter::run::RunEndValue::Break(_) => todo!(),
+                            filter::run::RunEndValue::Halt { code: _, err: _ } => todo!(),
                         };
                         return ExitCode::from(5);
                     }

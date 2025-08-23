@@ -1,11 +1,10 @@
-use std::{str::FromStr, sync::{Arc, LazyLock}};
-
-use crate::{json::Json, lexer::LexSource, math::Number};
-
 mod lexer;
 pub mod parser;
 pub mod run;
-pub mod run_vm;
+
+use std::{str::FromStr, sync::{Arc, LazyLock}};
+
+use crate::{json::Json, lexer::LexSource, math::Number};
 
 type FilterRef = Arc<Filter>;
 
@@ -52,8 +51,8 @@ pub enum Filter {
     Loc(Arc<str>, usize), // $__loc__
 }
 impl Filter {
-    pub fn run(self: &Arc<Self>, dot: Arc<Json>, vars: im::HashMap<Arc<str>, Arc<Json>>) -> run_vm::FilterRunner {
-        run_vm::FilterRunner::new(self.clone(), dot, vars)
+    pub fn run(self: &Arc<Self>, dot: Arc<Json>, vars: im::HashMap<Arc<str>, Arc<Json>>) -> run::FilterRunner {
+        run::FilterRunner::new(self.clone(), dot, vars)
     }
 
     pub fn string(s: Arc<str>) -> Self {

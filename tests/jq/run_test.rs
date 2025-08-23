@@ -43,9 +43,9 @@ fn test_run(test: JqTest) {
         }
         Err(end) => {
             match end {
-                filter::run_vm::RunEndValue::Error(err) => panic!("Line {test_line}; error {err}"),
-                filter::run_vm::RunEndValue::Break(label) => panic!("Line {test_line}; break '{label}'"),
-                filter::run_vm::RunEndValue::Halt { code, err } => panic!("Line {test_line}; halt '{err:?} ({code})'"),
+                filter::run::RunEndValue::Error(err) => panic!("Line {test_line}; error {err}"),
+                filter::run::RunEndValue::Break(label) => panic!("Line {test_line}; break '{label}'"),
+                filter::run::RunEndValue::Halt { code, err } => panic!("Line {test_line}; halt '{err:?} ({code})'"),
             }
         }
     }
