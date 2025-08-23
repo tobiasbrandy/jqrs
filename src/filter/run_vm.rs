@@ -1,10 +1,12 @@
-#![allow(clippy::too_many_arguments)]
+mod builtins_vm;
 
 use std::sync::{Arc, Weak};
 
 use crate::filter::Filter;
 use crate::json::Json;
 use crate::math::Number;
+
+// -------------- Public API -------------- //
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEndValue {
@@ -13,21 +15,72 @@ pub enum RunEndValue {
     Halt { code: usize, err: Option<Arc<Json>> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct FilterRunner {
+    module_scopes: Vec<Arc<Scope>>,
     stack: Vec<Frame>,
 }
 impl FilterRunner {
-    pub fn new(filter: Arc<Filter>, json: Arc<Json>) -> Self {
-        Self {
-            stack: vec![Frame {
-                filter,
-                scope: Arc::new(Scope::default()),
-                state: FrameState::default(),
-                dot: json,
-                parent: 0,
-                closed: false,
-            }],
+    pub fn new(
+        filter: Arc<Filter>,
+        dot: Arc<Json>,
+        vars: im::HashMap<Arc<str>, Arc<Json>>,
+    ) -> Self {
+        let mut ret = Self::default();
+        ret.reuse(filter, dot, vars);
+        ret
+    }
+
+    pub fn clear(&mut self) {
+        self.stack.clear();
+    }
+
+    pub fn reuse(
+        &mut self,
+        filter: Arc<Filter>,
+        dot: Arc<Json>,
+        vars: im::HashMap<Arc<str>, Arc<Json>>,
+    ) {
+        self.clear();
+
+        let scope = match self.module_scopes.last() {
+            Some(scope) => scope.clone(),
+            None => Arc::new(Scope {
+                vars,
+                funcs: builtins_vm::JQ_BUILTINS.clone(),
+                labels: im::HashSet::new(),
+            }),
+        };
+
+        self.stack.push(Frame {
+            filter,
+            scope,
+            state: FrameState::default(),
+            dot,
+            parent: 0,
+            closed: false,
+        });
+    }
+
+    pub fn load_module(&mut self, module: &Arc<Filter>) {
+        if self.stack.len() > 1 {
+            panic!("Cannot load module after running");
+        }
+
+        let base_scope = match self.stack.last() {
+            Some(frame) => frame.scope.clone(),
+            None => Arc::new(Scope {
+                vars: im::HashMap::new(),
+                funcs: builtins_vm::JQ_BUILTINS.clone(),
+                labels: im::HashSet::new(),
+            }),
+        };
+
+        let new_modules = run_module(&base_scope, module);
+        if !new_modules.is_empty() {
+            self.module_scopes.extend(new_modules);
+
+            self.stack.last_mut().unwrap().scope = self.module_scopes.last().cloned().unwrap();
         }
     }
 }
@@ -39,12 +92,21 @@ impl Iterator for FilterRunner {
             return None;
         }
 
-        match run(self) {
+        match run(&mut self.stack) {
             RunVal::Value(json) => Some(Ok(json)),
             RunVal::EndOk => None,
             RunVal::EndErr(err) => Some(Err(err)),
         }
     }
+}
+
+// -------------- Internal Types -------------- //
+
+#[derive(Debug, Clone, Default)]
+struct Scope {
+    vars: im::HashMap<Arc<str>, Arc<Json>>,
+    funcs: im::HashMap<(Arc<str>, usize), FuncDef>,
+    labels: im::HashSet<Arc<str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,14 +116,7 @@ struct FuncDef {
     body: Arc<Filter>,
 }
 
-#[derive(Debug, Clone, Default)]
-struct Scope {
-    vars: im::HashMap<Arc<str>, Arc<Json>>,
-    funcs: im::HashMap<(Arc<str>, usize), FuncDef>,
-    labels: im::HashSet<Arc<str>>,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Frame {
     filter: Arc<Filter>,
     scope: Arc<Scope>,
@@ -121,7 +176,7 @@ impl From<Result<Arc<Json>, RunEndValue>> for StepOut {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 enum FrameState {
     #[default]
     Start,
@@ -143,28 +198,62 @@ enum FrameState {
     Label(LabelState),
 }
 
-fn run(runner: &mut FilterRunner) -> RunVal {
-    if runner.stack.is_empty() {
+// -------------- Main Drivers -------------- //
+
+fn run_module(base_scope: &Scope, module: &Arc<Filter>) -> Vec<Arc<Scope>> {
+    let mut ret = vec![];
+    let mut curr_scope = base_scope;
+    let mut curr_module = module;
+
+    loop {
+        match curr_module.as_ref() {
+            Filter::FuncDef(name, params, body, next) => {
+                let new_scope = Arc::new_cyclic(|weak| {
+                    let mut scope = curr_scope.clone();
+                    scope.funcs.insert(
+                        (name.clone(), params.len()),
+                        FuncDef {
+                            scope: weak.clone(),
+                            params: params.clone(),
+                            body: body.clone(),
+                        },
+                    );
+                    scope
+                });
+
+                ret.push(new_scope);
+                curr_scope = ret.last().unwrap();
+                curr_module = next;
+            }
+            // End of def chain
+            Filter::Identity => return ret,
+            _ => panic!("Modules may only have function definitions"),
+        }
+    }
+}
+
+fn run(stack: &mut Vec<Frame>) -> RunVal {
+    if stack.is_empty() {
         return RunVal::EndOk;
     }
 
-    let mut frame_idx = runner.stack.len() - 1;
+    let mut frame_idx = stack.len() - 1;
     let mut yielded: Option<RunVal> = None;
 
     loop {
-        let frame = &mut runner.stack[frame_idx];
+        let frame = &mut stack[frame_idx];
         let parent = frame.parent;
 
         let step_output = if frame.closed {
             StepOut::EndOk
         } else {
-            frame_run(frame, yielded.unwrap_or_default())
+            run_frame(frame, yielded.unwrap_or_default())
         };
 
         yielded = match step_output {
             StepOut::Run(filter, dot) => {
                 let scope = frame.scope.clone();
-                runner.stack.push(Frame {
+                stack.push(Frame {
                     filter,
                     scope,
                     state: FrameState::default(),
@@ -175,7 +264,7 @@ fn run(runner: &mut FilterRunner) -> RunVal {
                 None
             }
             StepOut::RunScoped(filter, dot, scope) => {
-                runner.stack.push(Frame {
+                stack.push(Frame {
                     filter,
                     scope,
                     state: FrameState::default(),
@@ -192,14 +281,14 @@ fn run(runner: &mut FilterRunner) -> RunVal {
             }
             StepOut::Continue => None,
             StepOut::EndOk => {
-                while runner.stack.len() > frame_idx {
-                    runner.stack.pop();
+                while stack.len() > frame_idx {
+                    stack.pop();
                 }
                 Some(RunVal::EndOk)
             }
             StepOut::EndErr(err) => {
-                while runner.stack.len() > frame_idx {
-                    runner.stack.pop();
+                while stack.len() > frame_idx {
+                    stack.pop();
                 }
                 Some(RunVal::EndErr(err))
             }
@@ -213,13 +302,15 @@ fn run(runner: &mut FilterRunner) -> RunVal {
 
         frame_idx = match yielded {
             Some(_) => parent,
-            None => runner.stack.len() - 1,
+            None => stack.len() - 1,
         }
     }
 }
 
+// -------------- Implementation -------------- //
+
 #[rustfmt::skip]
-fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
+fn run_frame(frame: &mut Frame, yielded: RunVal) -> StepOut {
     let state = &mut frame.state;
     let dot = &frame.dot;
     let scope = &frame.scope;
@@ -318,7 +409,6 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
             }).into()),
             _ => unreachable!(),
         }
-        _ => todo!(),
     }
 }
 
@@ -713,31 +803,24 @@ fn run_slice(
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 enum IterState {
     #[default]
     Start,
-    IterArray(im::vector::ConsumingIter<Arc<Json>>),
-    IterObject(im::hashmap::ConsumingIter<(Arc<str>, Arc<Json>)>),
-}
-impl std::fmt::Debug for IterState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IterState::Start => write!(f, "Start"),
-            IterState::IterArray(_) => write!(f, "IterArray"),
-            IterState::IterObject(_) => write!(f, "IterObject"),
-        }
-    }
+    IterArray(std::vec::IntoIter<Arc<Json>>),
+    IterObject(std::vec::IntoIter<(Arc<str>, Arc<Json>)>),
 }
 fn run_iter(state: &mut IterState, dot: &Arc<Json>) -> StepOut {
     match state {
         IterState::Start => match dot.as_ref() {
             Json::Array(arr) => {
-                *state = IterState::IterArray(arr.clone().into_iter());
+                *state =
+                    IterState::IterArray(arr.clone().into_iter().collect::<Vec<_>>().into_iter());
                 run_iter(state, dot)
             }
             Json::Object(obj) => {
-                *state = IterState::IterObject(obj.clone().into_iter());
+                *state =
+                    IterState::IterObject(obj.clone().into_iter().collect::<Vec<_>>().into_iter());
                 run_iter(state, dot)
             }
             any => StepOut::EndErr(str_error(format!(
@@ -1126,6 +1209,7 @@ enum FuncDefState {
     Start,
     Next,
 }
+#[allow(clippy::too_many_arguments)]
 fn run_func_def(
     state: &mut FuncDefState,
     scope: &Scope,
@@ -1162,7 +1246,8 @@ fn run_func_def(
 enum FuncCallState {
     #[default]
     Start,
-    Body,
+    JqBody,
+    RsBuiltin(builtins_vm::RsBuiltinState),
 }
 fn run_func_call(
     state: &mut FuncCallState,
@@ -1178,8 +1263,8 @@ fn run_func_call(
     match state {
         FuncCallState::Start => {
             let Some(func) = scope.funcs.get(&(name.clone(), args.len())) else {
-                // StepOut::Return(builtins::run_rs_builtin(name, argc, out, ctx, args, json))
-                todo!()
+                *state = FuncCallState::RsBuiltin(builtins_vm::RsBuiltinState::default());
+                return run_func_call(state, scope, dot, yielded, name, args);
             };
 
             let param_scope = Arc::downgrade(scope);
@@ -1196,10 +1281,13 @@ fn run_func_call(
                 );
             }
 
-            *state = FuncCallState::Body;
+            *state = FuncCallState::JqBody;
             StepOut::run_scoped(&func.body, dot, Arc::new(new_scope))
         }
-        FuncCallState::Body => yielded.into(),
+        FuncCallState::JqBody => yielded.into(),
+        FuncCallState::RsBuiltin(state) => {
+            builtins_vm::run_rs_builtin(state, scope, dot, yielded, name, args)
+        }
     }
 }
 
@@ -1277,7 +1365,7 @@ mod test {
             [1,2,3]
         "#;
         let filter = r#"
-            1 | label $out | 1, 2, 3, ., break $out, 5, 4, 6, 7
+            foreach .[] as $item (0; . + $item; [$item, . * 2])
         "#;
 
         let input: Arc<_> = input
@@ -1291,7 +1379,7 @@ mod test {
 
         println!();
 
-        for result in FilterRunner::new(filter, input) {
+        for result in FilterRunner::new(filter, input, Default::default()) {
             match result {
                 Ok(json) => print!("{json:?}"),
                 Err(end) => match end {

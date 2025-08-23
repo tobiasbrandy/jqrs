@@ -1,0 +1,390 @@
+use std::sync::{Arc, LazyLock};
+
+use rug::{Integer, float::Round};
+
+use crate::{
+    filter::{
+        Filter,
+        run_vm::{
+            FuncDef, RunEndValue, RunVal, Scope, StepOut, json_fmt_error, run_module, str_error,
+        },
+    },
+    json::Json,
+    math::Number,
+};
+
+pub(super) static JQ_BUILTINS: LazyLock<im::HashMap<(Arc<str>, usize), FuncDef>> =
+    LazyLock::new(|| {
+        let builtins_module: Arc<_> = include_str!("builtins.jq")
+            .parse::<Filter>()
+            .expect("Error parsing jq builtins")
+            .into();
+
+        let module_scopes = run_module(&Scope::default(), &builtins_module);
+
+        let jq_builtins = module_scopes
+            .last()
+            .expect("No builtins found")
+            .funcs
+            .clone();
+
+        // Leak all scopes to make sure they are never deallocated
+        for scope in &module_scopes {
+            // We create a strong ref count and immediately forget it
+            std::mem::forget(scope.clone());
+        }
+
+        jq_builtins
+    });
+
+#[derive(Debug, Clone, Default)]
+pub(super) enum RsBuiltinState {
+    #[default]
+    Start,
+    Unary(UnaryState),
+    Binary(BinaryState),
+}
+
+pub(super) fn run_rs_builtin(
+    state: &mut RsBuiltinState,
+    _scope: &Scope,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    name: &str,
+    args: &[Arc<Filter>],
+) -> StepOut {
+    macro_rules! state {
+        ($variant:ident) => {{
+            if matches!(state, RsBuiltinState::Start) {
+                *state = RsBuiltinState::$variant(Default::default());
+            }
+            match state {
+                RsBuiltinState::$variant(s) => s,
+                _ => unreachable!(),
+            }
+        }};
+    }
+
+    macro_rules! nullary {
+        ($func:ident) => {
+            nullary(dot, $func)
+        };
+    }
+
+    macro_rules! unary {
+        ($func:ident) => {
+            unary(state!(Unary), dot, yielded, args, $func)
+        };
+    }
+
+    macro_rules! binary {
+        ($func:ident) => {
+            binary(state!(Binary), dot, yielded, args, $func)
+        };
+    }
+
+    match (name, args.len()) {
+        ("empty", 0) => empty(),
+        ("not", 0) => nullary!(not),
+        // ("range", 2) => binary(dot, yielded, args, range),
+        // ("path", 1) => unary(dot, yielded, args, path),
+        ("_plus", 2) => binary!(plus),
+        ("_negate", 1) => unary!(negate),
+        ("_minus", 2) => binary!(minus),
+        ("_multiply", 2) => binary!(multiply),
+        ("_divide", 2) => binary!(divide),
+        ("_modulus", 2) => binary!(modulus),
+        ("_equal", 2) => binary!(equal),
+        ("_not_equal", 2) => binary!(not_equal),
+        ("_less", 2) => binary!(less),
+        ("_less_equal", 2) => binary!(less_equal),
+        ("_greater", 2) => binary!(greater),
+        ("_greater_equal", 2) => binary!(greater_equal),
+        ("_sort", 0) => nullary!(sort),
+        ("_infinite", 0) => nullary!(infinite),
+        ("_nan", 0) => nullary!(nan),
+        (_, argc) => StepOut::EndErr(str_error(format!("{name}/{argc} is not defined"))),
+    }
+}
+
+// -------------- Utils -------------- //
+
+type NullaryFn = fn(&Arc<Json>) -> Result<Arc<Json>, RunEndValue>;
+fn nullary(dot: &Arc<Json>, f: NullaryFn) -> StepOut {
+    match f(dot) {
+        Ok(val) => StepOut::Return(val),
+        Err(end) => StepOut::EndErr(end),
+    }
+}
+
+type UnaryFn = fn(&Arc<Json>, &Arc<Json>) -> Result<Arc<Json>, RunEndValue>;
+#[derive(Debug, Clone, Default)]
+pub(super) enum UnaryState {
+    #[default]
+    Start,
+    RunA,
+}
+fn unary(
+    state: &mut UnaryState,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    args: &[Arc<Filter>],
+    f: UnaryFn,
+) -> StepOut {
+    match state {
+        UnaryState::Start => {
+            let [a] = args else {
+                unreachable!("Unary functions take one argument");
+            };
+
+            *state = UnaryState::RunA;
+            StepOut::run(a, dot)
+        }
+        UnaryState::RunA => match yielded {
+            RunVal::Value(a) => f(&a, dot).into(),
+            val => val.into(),
+        },
+    }
+}
+
+type BinaryFn = fn(&Arc<Json>, &Arc<Json>, &Arc<Json>) -> Result<Arc<Json>, RunEndValue>;
+#[derive(Debug, Clone, Default)]
+pub(super) enum BinaryState {
+    #[default]
+    Start,
+    RunB,
+    RunA(Arc<Json>),
+}
+fn binary(
+    state: &mut BinaryState,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    args: &[Arc<Filter>],
+    f: BinaryFn,
+) -> StepOut {
+    match state {
+        BinaryState::Start => {
+            *state = BinaryState::RunB;
+            let b = &args[1];
+            StepOut::run(b, dot)
+        }
+        BinaryState::RunB => match yielded {
+            RunVal::Value(b) => {
+                *state = BinaryState::RunA(b);
+                let a = &args[0];
+                StepOut::run(a, dot)
+            }
+            val => val.into(),
+        },
+        BinaryState::RunA(b) => match yielded {
+            RunVal::Value(a) => f(&a, b, dot).into(),
+            RunVal::EndOk => {
+                *state = BinaryState::RunB;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+    }
+}
+
+// -------------- Builtins -------------- //
+
+fn empty() -> StepOut {
+    StepOut::EndOk
+}
+
+fn not(dot: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(!dot.to_bool()))
+}
+
+fn plus(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match (left.as_ref(), right.as_ref()) {
+        (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l + r).into()),
+        (Json::Array(l), Json::Array(r)) => Ok(Json::Array(r + l).into()),
+        (Json::String(l), Json::String(r)) => Ok(Json::String(
+            (String::with_capacity(l.len() + r.len()) + l.as_ref() + r.as_ref()).into(),
+        )
+        .into()),
+        (Json::Object(l), Json::Object(r)) => Ok(Json::Object(r + l).into()),
+        (Json::Null, _) => Ok(right.clone()),
+        (_, Json::Null) => Ok(left.clone()),
+        (l, r) => Err(str_error(format!(
+            "{} and {} cannot be added",
+            json_fmt_error(l),
+            json_fmt_error(r)
+        ))),
+    }
+}
+
+fn negate(val: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match val.as_ref() {
+        Json::Number(n) => Ok(Json::Number(-n).into()),
+        any => Err(str_error(format!(
+            "{} cannot be negated",
+            json_fmt_error(any)
+        ))),
+    }
+}
+
+fn minus(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match (left.as_ref(), right.as_ref()) {
+        (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l - r).into()),
+        (Json::Array(l), Json::Array(r)) => {
+            Ok(Json::Array(l.iter().filter(|&x| !r.contains(x)).cloned().collect()).into())
+        }
+        (l, r) => Err(str_error(format!(
+            "{} and {} cannot be substracted",
+            json_fmt_error(l),
+            json_fmt_error(r)
+        ))),
+    }
+}
+
+fn multiply(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match (left.as_ref(), right.as_ref()) {
+        (Json::Number(l), Json::Number(r)) => Ok(Json::Number(l * r).into()),
+        (Json::String(s), Json::Number(n)) => Ok(n
+            .to_usize(Round::Down)
+            .map(|n| Json::String(s.clone().repeat(n).into()).into())
+            .unwrap_or(Json::arc_null())),
+        (Json::Object(_), Json::Object(_)) => {
+            fn merge_rec_arc(l: Arc<Json>, r: Arc<Json>) -> Arc<Json> {
+                match (l.as_ref(), r.as_ref()) {
+                    (Json::Object(l), Json::Object(r)) => {
+                        Json::Object(l.clone().union_with(r.clone(), merge_rec_arc)).into()
+                    }
+                    _ => r,
+                }
+            }
+            Ok(merge_rec_arc(left.clone(), right.clone()))
+        }
+        (l, r) => Err(str_error(format!(
+            "{} and {} cannot be multiplied",
+            json_fmt_error(l),
+            json_fmt_error(r)
+        ))),
+    }
+}
+
+fn divide(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match (left.as_ref(), right.as_ref()) {
+        (jl @ Json::Number(l), jr @ Json::Number(r)) => {
+            if r.is_zero() {
+                Err(str_error(format!(
+                    "{} and {} cannot be divided because the divisor is zero",
+                    json_fmt_error(jl),
+                    json_fmt_error(jr)
+                )))
+            } else {
+                Ok(Json::Number(l / r).into())
+            }
+        }
+        (Json::String(l), Json::String(r)) => Ok(Json::Array({
+            let mut ret = l
+                .split(r.as_ref())
+                .map(|s| Json::String(s.into()).into())
+                .collect::<im::Vector<_>>();
+            if r.is_empty() {
+                ret.pop_front();
+                ret.pop_back();
+            }
+            ret
+        })
+        .into()),
+        (l, r) => Err(str_error(format!(
+            "{} and {} cannot be divided",
+            json_fmt_error(l),
+            json_fmt_error(r)
+        ))),
+    }
+}
+
+fn modulus(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match (left.as_ref(), right.as_ref()) {
+        (jl @ Json::Number(l), jr @ Json::Number(r)) => {
+            if r.is_zero() {
+                Err(str_error(format!(
+                    "{} and {} cannot be divided (remainder) because the divisor is zero",
+                    json_fmt_error(jl),
+                    json_fmt_error(jr)
+                )))
+            } else {
+                let left = l.to_integer(Round::Zero);
+                let right = r.to_integer(Round::Zero);
+                Ok(Json::Number(Number::Int(match (left, right) {
+                    (Some(left), Some(right)) => {
+                        let ret = left.clone().abs() % right.abs();
+                        if left.is_negative() { -ret } else { ret }
+                    }
+                    (None, Some(right)) => right,
+                    (Some(left), None) => left,
+                    (None, None) => Integer::ZERO,
+                }))
+                .into())
+            }
+        }
+        (l, r) => Err(str_error(format!(
+            "{} and {} cannot be divided (remainder)",
+            json_fmt_error(l),
+            json_fmt_error(r)
+        ))),
+    }
+}
+
+fn equal(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(
+        left.is_nan() && right.is_nan() && left != right,
+    ))
+}
+
+fn not_equal(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(
+        left.is_nan() || right.is_nan() || left != right,
+    ))
+}
+
+fn less(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(left.is_nan() || left < right))
+}
+
+fn less_equal(
+    left: &Arc<Json>,
+    right: &Arc<Json>,
+    _: &Arc<Json>,
+) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(left.is_nan() || left <= right))
+}
+
+fn greater(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(!left.is_nan() && left > right))
+}
+
+fn greater_equal(
+    left: &Arc<Json>,
+    right: &Arc<Json>,
+    _: &Arc<Json>,
+) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_bool(!left.is_nan() && left >= right))
+}
+
+fn sort(dot: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    match dot.as_ref() {
+        Json::Array(arr) => {
+            let mut new_arr = arr.clone();
+            new_arr.sort();
+            Ok(Json::Array(new_arr).into())
+        }
+        _ => Err(str_error(format!(
+            "{} cannot be sorted, as it is not an array",
+            json_fmt_error(dot)
+        ))),
+    }
+}
+
+fn infinite(_: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_infinity())
+}
+
+fn nan(_: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
+    Ok(Json::arc_nan())
+}
