@@ -136,6 +136,8 @@ enum FrameState {
     TryCatch(TryCatchState),
     Comma(CommaState),
     IfElse(IfElseState),
+    Reduce(ReduceState),
+    Foreach(ForeachState),
     FuncDef(FuncDefState),
     FuncCall(FuncCallState),
     Label(LabelState),
@@ -285,6 +287,12 @@ fn frame_run(frame: &mut Frame, yielded: RunVal) -> StepOut {
         }
         Filter::IfElse(cond, then, else_) => {
             run_if_else(state!(IfElse), dot, yielded, cond, then, else_)
+        }
+        Filter::Reduce(exp, name, init, update) => {
+            run_reduce(state!(Reduce), scope, dot, yielded, exp, name, init, update)
+        }
+        Filter::Foreach(exp, name, init, update, extract) => {
+            run_foreach(state!(Foreach), scope, dot, yielded, exp, name, init, update, extract)
         }
         Filter::FuncDef(name, params, body, next) => {
             run_func_def(state!(FuncDef), scope, dot, yielded, name, params, body, next)
@@ -926,6 +934,185 @@ fn run_if_else(
         IfElseState::Branch => match yielded {
             RunVal::EndOk => {
                 *state = IfElseState::Cond;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum ReduceInnerState {
+    #[default]
+    Start,
+    Init,
+    Exp,
+    Update,
+}
+#[derive(Debug, Clone, Default)]
+struct ReduceState {
+    state: ReduceInnerState,
+    exp_input: Option<Arc<Json>>,
+    acc: Option<Arc<Json>>,
+    inner_acc: Option<Arc<Json>>,
+}
+#[allow(clippy::too_many_arguments)]
+fn run_reduce(
+    ReduceState {
+        state,
+        exp_input,
+        acc,
+        inner_acc,
+    }: &mut ReduceState,
+    scope: &Scope,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    exp: &Arc<Filter>,
+    name: &Arc<str>,
+    init: &Arc<Filter>,
+    update: &Arc<Filter>,
+) -> StepOut {
+    match state {
+        ReduceInnerState::Start => {
+            *state = ReduceInnerState::Init;
+            *exp_input = Some(dot.clone());
+            StepOut::run(init, dot)
+        }
+        ReduceInnerState::Init => match yielded {
+            RunVal::Value(init) => {
+                *state = ReduceInnerState::Exp;
+                *acc = Some(init);
+                StepOut::Run(exp.clone(), exp_input.take().unwrap_or(Json::arc_null()))
+            }
+            val => val.into(),
+        },
+        ReduceInnerState::Exp => match yielded {
+            RunVal::Value(val) => {
+                *state = ReduceInnerState::Update;
+                *inner_acc = Some(Json::arc_null());
+
+                let mut new_scope = scope.clone();
+                new_scope.vars.insert(name.clone(), val.clone());
+
+                StepOut::run_scoped(
+                    update,
+                    acc.as_ref().unwrap(),
+                    Arc::new(new_scope),
+                )
+            }
+            RunVal::EndOk => {
+                *state = ReduceInnerState::Init;
+                *acc = None;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+        ReduceInnerState::Update => match yielded {
+            RunVal::Value(update) => {
+                *inner_acc = Some(update);
+                StepOut::Continue
+            }
+            RunVal::EndOk => {
+                *state = ReduceInnerState::Exp;
+                *acc = inner_acc.take();
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+enum ForeachInnerState {
+    #[default]
+    Start,
+    Init,
+    Exp,
+    Update,
+    Extract,
+}
+#[derive(Debug, Clone, Default)]
+struct ForeachState {
+    state: ForeachInnerState,
+    exp_input: Option<Arc<Json>>,
+    acc: Option<Arc<Json>>,
+    inner_acc: Option<Arc<Json>>,
+    extract_scope: Option<Arc<Scope>>,
+}
+#[allow(clippy::too_many_arguments)]
+fn run_foreach(
+    ForeachState {
+        state,
+        exp_input,
+        acc,
+        inner_acc,
+        extract_scope,
+    }: &mut ForeachState,
+    scope: &Scope,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    exp: &Arc<Filter>,
+    name: &Arc<str>,
+    init: &Arc<Filter>,
+    update: &Arc<Filter>,
+    extract: &Arc<Filter>,
+) -> StepOut {
+    match state {
+        ForeachInnerState::Start => {
+            *state = ForeachInnerState::Init;
+            *exp_input = Some(dot.clone());
+            StepOut::run(init, dot)
+        }
+        ForeachInnerState::Init => match yielded {
+            RunVal::Value(init) => {
+                *state = ForeachInnerState::Exp;
+                *acc = Some(init);
+                StepOut::Run(exp.clone(), exp_input.take().unwrap_or(Json::arc_null()))
+            }
+            val => val.into(),
+        },
+        ForeachInnerState::Exp => match yielded {
+            RunVal::Value(val) => {
+                *state = ForeachInnerState::Update;
+                *inner_acc = Some(Json::arc_null());
+
+                let mut new_scope = scope.clone();
+                new_scope.vars.insert(name.clone(), val.clone());
+                *extract_scope = Some(Arc::new(new_scope));
+
+                StepOut::run_scoped(
+                    update,
+                    acc.as_ref().unwrap(),
+                    extract_scope.clone().unwrap(),
+                )
+            }
+            RunVal::EndOk => {
+                *state = ForeachInnerState::Init;
+                *acc = None;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+        ForeachInnerState::Update => match yielded {
+            RunVal::Value(update) => {
+                *state = ForeachInnerState::Extract;
+                *inner_acc = Some(update);
+                StepOut::run_scoped(
+                    extract,
+                    inner_acc.as_ref().unwrap(),
+                    extract_scope.clone().unwrap(),
+                )
+            }
+            RunVal::EndOk => {
+                *state = ForeachInnerState::Exp;
+                *acc = inner_acc.take();
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+        ForeachInnerState::Extract => match yielded {
+            RunVal::EndOk => {
+                *state = ForeachInnerState::Update;
                 StepOut::Continue
             }
             val => val.into(),
