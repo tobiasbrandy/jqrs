@@ -1,8 +1,6 @@
-mod common;
-
 use std::sync::Arc;
 
-use common::{parse_tests, JqTest};
+use crate::common::{parse_tests, JqTest};
 use jqrs::{
     filter::{run::{RunCtx, RunEndValue}, Filter},
     json::Json,

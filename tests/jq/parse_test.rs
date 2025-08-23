@@ -1,6 +1,4 @@
-mod common;
-
-use common::{parse_tests, JqTest};
+use crate::common::{parse_tests, JqTest};
 use jqrs::filter::Filter;
 
 fn test_filter_parse(test: JqTest) {
