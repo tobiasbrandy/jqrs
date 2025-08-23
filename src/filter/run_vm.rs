@@ -1365,7 +1365,7 @@ mod test {
             [1,2,3]
         "#;
         let filter = r#"
-            foreach .[] as $item (0; . + $item; [$item, . * 2])
+            range(0; 100)
         "#;
 
         let input: Arc<_> = input

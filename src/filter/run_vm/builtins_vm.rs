@@ -43,8 +43,10 @@ pub(super) enum RsBuiltinState {
     Start,
     Unary(UnaryState),
     Binary(BinaryState),
+    Range(RangeState),
 }
 
+#[rustfmt::skip]
 pub(super) fn run_rs_builtin(
     state: &mut RsBuiltinState,
     _scope: &Scope,
@@ -84,25 +86,25 @@ pub(super) fn run_rs_builtin(
     }
 
     match (name, args.len()) {
-        ("empty", 0) => empty(),
-        ("not", 0) => nullary!(not),
-        // ("range", 2) => binary(dot, yielded, args, range),
+        ("empty",           0) => empty(),
+        ("not",             0) => nullary!(not),
+        ("range",           2) => range(state!(Range), dot, yielded, args),
         // ("path", 1) => unary(dot, yielded, args, path),
-        ("_plus", 2) => binary!(plus),
-        ("_negate", 1) => unary!(negate),
-        ("_minus", 2) => binary!(minus),
-        ("_multiply", 2) => binary!(multiply),
-        ("_divide", 2) => binary!(divide),
-        ("_modulus", 2) => binary!(modulus),
-        ("_equal", 2) => binary!(equal),
-        ("_not_equal", 2) => binary!(not_equal),
-        ("_less", 2) => binary!(less),
-        ("_less_equal", 2) => binary!(less_equal),
-        ("_greater", 2) => binary!(greater),
-        ("_greater_equal", 2) => binary!(greater_equal),
-        ("_sort", 0) => nullary!(sort),
-        ("_infinite", 0) => nullary!(infinite),
-        ("_nan", 0) => nullary!(nan),
+        ("_plus",           2) => binary!(plus),
+        ("_negate",         1) => unary!(negate),
+        ("_minus",          2) => binary!(minus),
+        ("_multiply",       2) => binary!(multiply),
+        ("_divide",         2) => binary!(divide),
+        ("_mod",            2) => binary!(modulus),
+        ("_equal",          2) => binary!(equal),
+        ("_not_equal",      2) => binary!(not_equal),
+        ("_less",           2) => binary!(less),
+        ("_greater",        2) => binary!(greater),
+        ("_lesseq",         2) => binary!(less_equal),
+        ("_greatereq",      2) => binary!(greater_equal),
+        ("sort",           0) => nullary!(sort),
+        ("infinite",       0) => nullary!(infinite),
+        ("nan",            0) => nullary!(nan),
         (_, argc) => StepOut::EndErr(str_error(format!("{name}/{argc} is not defined"))),
     }
 }
@@ -133,12 +135,8 @@ fn unary(
 ) -> StepOut {
     match state {
         UnaryState::Start => {
-            let [a] = args else {
-                unreachable!("Unary functions take one argument");
-            };
-
             *state = UnaryState::RunA;
-            StepOut::run(a, dot)
+            StepOut::run(&args[0], dot)
         }
         UnaryState::RunA => match yielded {
             RunVal::Value(a) => f(&a, dot).into(),
@@ -165,14 +163,12 @@ fn binary(
     match state {
         BinaryState::Start => {
             *state = BinaryState::RunB;
-            let b = &args[1];
-            StepOut::run(b, dot)
+            StepOut::run(&args[1], dot)
         }
         BinaryState::RunB => match yielded {
             RunVal::Value(b) => {
                 *state = BinaryState::RunA(b);
-                let a = &args[0];
-                StepOut::run(a, dot)
+                StepOut::run(&args[0], dot)
             }
             val => val.into(),
         },
@@ -195,6 +191,99 @@ fn empty() -> StepOut {
 
 fn not(dot: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {
     Ok(Json::arc_bool(!dot.to_bool()))
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) enum RangeState {
+    #[default]
+    Start,
+    GetStart,
+    GetEnd {
+        start: Arc<Json>,
+    },
+    InfiniteNaN,
+    InfiniteInc {
+        curr: Number,
+    },
+    InfiniteNegInfinite,
+    Range {
+        len: Integer,
+        curr: Number,
+    },
+}
+fn range(
+    state: &mut RangeState,
+    dot: &Arc<Json>,
+    yielded: RunVal,
+    args: &[Arc<Filter>],
+) -> StepOut {
+    // Range's argument cross product order is backwards (don't know why, ask jq)
+    match state {
+        RangeState::Start => {
+            *state = RangeState::GetStart;
+            StepOut::run(&args[0], dot)
+        }
+        RangeState::GetStart => match yielded {
+            RunVal::Value(start) => {
+                *state = RangeState::GetEnd { start };
+                StepOut::run(&args[1], dot)
+            }
+            val => val.into(),
+        },
+        RangeState::GetEnd { start } => match yielded {
+            RunVal::Value(end) => {
+                *state = match (start.as_ref(), end.as_ref()) {
+                    (Json::Number(start), Json::Number(end)) => {
+                        if start.is_nan() {
+                            RangeState::InfiniteNaN
+                        } else if end.is_nan() || end.is_pos_infinite() {
+                            RangeState::InfiniteInc {
+                                curr: start.clone(),
+                            }
+                        } else if start.is_neg_infinite() {
+                            RangeState::InfiniteNegInfinite
+                        } else if start.is_pos_infinite() || end.is_neg_infinite() {
+                            return StepOut::EndOk;
+                        } else {
+                            let len = (end - start).to_integer(Round::Up).unwrap();
+                            RangeState::Range {
+                                len,
+                                curr: start.clone(),
+                            }
+                        }
+                    }
+                    (_, _) => {
+                        return StepOut::EndErr(str_error(
+                            "Range bounds must be numeric".to_string(),
+                        ));
+                    }
+                };
+                range(state, dot, RunVal::default(), args)
+            }
+            RunVal::EndOk => {
+                *state = RangeState::Start;
+                StepOut::Continue
+            }
+            val => val.into(),
+        },
+        RangeState::InfiniteNaN => StepOut::Yield(Json::arc_nan()),
+        RangeState::InfiniteInc { curr } => {
+            let ret = Json::Number(curr.clone()).into();
+            curr.inc_mut();
+            StepOut::Yield(ret)
+        }
+        RangeState::InfiniteNegInfinite => StepOut::Yield(Json::arc_neg_infinity()),
+        RangeState::Range { len, curr } => {
+            if *len > 0 {
+                let ret = Json::Number(curr.clone()).into();
+                curr.inc_mut();
+                *len -= 1;
+                StepOut::Yield(ret)
+            } else {
+                StepOut::EndOk
+            }
+        }
+    }
 }
 
 fn plus(left: &Arc<Json>, right: &Arc<Json>, _: &Arc<Json>) -> Result<Arc<Json>, RunEndValue> {

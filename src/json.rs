@@ -64,6 +64,12 @@ impl Json {
         ARC_INFINITY.clone()
     }
 
+    pub fn arc_neg_infinity() -> Arc<Self> {
+        static ARC_NEG_INFINITY: LazyLock<Arc<Json>> =
+            LazyLock::new(|| Arc::new(Json::Number(Number::neg_infinity())));
+        ARC_NEG_INFINITY.clone()
+    }
+
     pub fn arc_empty_array() -> Arc<Self> {
         static ARC_EMPTY_ARRAY: LazyLock<Arc<Json>> =
             LazyLock::new(|| Arc::new(Json::Array(im::Vector::new())));

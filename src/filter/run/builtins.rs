@@ -59,7 +59,6 @@ pub(super) async fn run_rs_builtin(
         ("not",         0) => not,
         ("range",       2) => range,
     //  ("path",        1) => path,
-    //  ("range",       2) => range,
         ("_plus",       2) => plus,
         ("_negate",     1) => negate,
         ("_minus",      2) => minus,
