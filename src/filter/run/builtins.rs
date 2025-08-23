@@ -32,7 +32,7 @@ pub(super) static JQ_BUILTINS: LazyLock<im::HashMap<FuncId, Arc<FuncDef>>> = Laz
         .expect("Error parsing jq builtins")
         .into();
 
-    filter.run(&ctx, &Json::arc_null()).last();
+    run(&ctx, &filter, &Json::arc_null()).last();
 
     ctx.scope.into_inner().lock().unwrap().funcs.clone()
 });

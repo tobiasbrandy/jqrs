@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::common::{parse_tests, JqTest};
 use jqrs::{
-    filter::{run::{RunCtx, RunEndValue}, Filter},
+    filter::{self, Filter},
     json::Json,
 };
 
@@ -33,21 +33,22 @@ fn test_run(test: JqTest) {
         })
         .collect::<Vec<_>>();
 
-    let ctx = RunCtx::default();
-    let mut run_gen = filter.run(&ctx, &input);
-    let result = run_gen.by_ref().collect::<Vec<_>>();
-    if let Some(end) = run_gen.end() {
-        match end {
-            RunEndValue::Error(err) => panic!("Line {test_line}; error {err}"),
-            RunEndValue::Break(label) => panic!("Line {test_line}; break '{label}'"),
-            RunEndValue::Halt(halt) => panic!("Line {test_line}; halt '{halt}'"),
+    let result = filter.run(input, Default::default()).collect::<Result<Vec<_>, _>>();
+    match result {
+        Ok(result) => {
+            assert_eq!(
+                result, expected_result,
+                "Line {test_line}; echo '{test_input}' | jqrs '{test_filter}'"
+            )
+        }
+        Err(end) => {
+            match end {
+                filter::run_vm::RunEndValue::Error(err) => panic!("Line {test_line}; error {err}"),
+                filter::run_vm::RunEndValue::Break(label) => panic!("Line {test_line}; break '{label}'"),
+                filter::run_vm::RunEndValue::Halt { code, err } => panic!("Line {test_line}; halt '{err:?} ({code})'"),
+            }
         }
     }
-
-    assert_eq!(
-        result, expected_result,
-        "Line {test_line}; echo '{test_input}' | jqrs '{test_filter}'"
-    )
 }
 
 fn test_run_file(tests: &str) {

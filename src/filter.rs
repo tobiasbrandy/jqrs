@@ -52,8 +52,8 @@ pub enum Filter {
     Loc(Arc<str>, usize), // $__loc__
 }
 impl Filter {
-    pub fn run<'a>(self: &'a Arc<Self>, ctx: &'a run::RunCtx, json: &'a Arc<Json>) -> run::RunGen<impl std::future::Future<Output = run::RunEnd> + 'a> {
-        run::run(ctx, self, json)
+    pub fn run(self: &Arc<Self>, dot: Arc<Json>, vars: im::HashMap<Arc<str>, Arc<Json>>) -> run_vm::FilterRunner {
+        run_vm::FilterRunner::new(self.clone(), dot, vars)
     }
 
     pub fn string(s: Arc<str>) -> Self {

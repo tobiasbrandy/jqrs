@@ -1024,7 +1024,7 @@ mod test {
         println!("{filter:?}");
 
         let ctx = RunCtx::default();
-        let mut run_gen = filter.run(&ctx, &input);
+        let mut run_gen = run(&ctx, &filter, &input);
         for json in &mut run_gen {
             print!("{json:?}");
         }

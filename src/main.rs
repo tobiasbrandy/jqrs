@@ -42,33 +42,36 @@ where
 fn process_json(
     options: &JqOptions,
     fmt: &json::fmt::Format,
-    ctx: &filter::run::RunCtx,
     filter: &Arc<Filter>,
+    vars: &im::HashMap<Arc<str>, Arc<Json>>,
     json: Result<Arc<Json>, JsonParserError>,
 ) -> ExitCode {
     match json {
         Ok(json) => {
             let mut exit_status = if options.exit_status { 4 } else { 0 };
 
-            let mut results = filter.run(ctx, &json);
-            for result in &mut results {
-                print!("{}", result.format(fmt));
+            for result in filter.run(json, vars.clone()) {
+                match result {
+                    Ok(json) => {
+                        print!("{}", json.format(fmt));
 
-                if options.unbuffered {
-                    let _ = std::io::stdout().flush();
+                        if options.unbuffered {
+                            let _ = std::io::stdout().flush();
+                        }
+        
+                        if options.exit_status {
+                            exit_status = if json.to_bool() { 0 } else { 1 };
+                        }
+                    }
+                    Err(end) => {
+                        match end {
+                            filter::run_vm::RunEndValue::Error(json) => println!("error: {json}"),
+                            filter::run_vm::RunEndValue::Break(_) => todo!(),
+                            filter::run_vm::RunEndValue::Halt { code: _, err: _ } => todo!(),
+                        };
+                        return ExitCode::from(5);
+                    }
                 }
-
-                if options.exit_status {
-                    exit_status = if result.to_bool() { 0 } else { 1 };
-                }
-            }
-            if let Some(end) = results.end() {
-                match end {
-                    filter::run::RunEndValue::Error(json) => println!("error: {json}"),
-                    filter::run::RunEndValue::Break(_) => todo!(),
-                    filter::run::RunEndValue::Halt(_) => todo!(),
-                };
-                return ExitCode::from(5);
             }
 
             ExitCode::from(exit_status)
@@ -235,18 +238,17 @@ fn main() -> ExitCode {
 
     let json_fmt = build_json_fmt(&options);
 
-    let run_vars = match build_run_vars(&options) {
+    let vars: im::HashMap<Arc<str>, Arc<Json>> = match build_run_vars(&options) {
         Ok(vars) => vars,
         Err(err) => {
             write_error(err);
             return ExitCode::from(2);
         }
     };
-    let ctx = filter::run::RunCtx::new(run_vars);
 
     let read_sources = match options.input_source.clone() {
         InputSource::Null => {
-            return process_json(&options, &json_fmt, &ctx, &filter, Ok(Json::arc_null()));
+            return process_json(&options, &json_fmt, &filter, &vars, Ok(Json::arc_null()));
         }
         InputSource::Stdin => vec![ReadSource::Stdin],
         InputSource::Files(paths) => paths.into_iter().map(ReadSource::File).collect(),
@@ -259,7 +261,7 @@ fn main() -> ExitCode {
             .filter_map(|result| result.map_err(write_error).ok())
             .flat_map(|source| Json::parser(source))
             .map(|r| r.map(Arc::new))
-            .map(|json| process_json(&options, &json_fmt, &ctx, &filter, json))
+            .map(|json| process_json(&options, &json_fmt, &filter, &vars, json))
             .last()
             .unwrap_or(if options.exit_status {
                 ExitCode::from(4)
@@ -276,7 +278,7 @@ fn main() -> ExitCode {
                 .collect::<Result<im::Vector<_>, _>>()
                 .map(|items| Json::Array(items).into());
 
-            process_json(&options, &json_fmt, &ctx, &filter, json)
+            process_json(&options, &json_fmt, &filter, &vars, json)
         }
         InputMode::Raw => {
             let json = read_sources
@@ -296,7 +298,7 @@ fn main() -> ExitCode {
                 .collect::<Result<im::Vector<_>, _>>()
                 .map(|items| Json::Array(items).into());
 
-            process_json(&options, &json_fmt, &ctx, &filter, json)
+            process_json(&options, &json_fmt, &filter, &vars, json)
         }
         InputMode::RawSlurp => {
             let mut raw_string = String::new();
@@ -309,7 +311,7 @@ fn main() -> ExitCode {
             let json = parse_raw_json_string(LexSource::String(raw_string))
                 .map(|s| Json::String(s.into()).into());
 
-            process_json(&options, &json_fmt, &ctx, &filter, json)
+            process_json(&options, &json_fmt, &filter, &vars, json)
         }
     }
 }
